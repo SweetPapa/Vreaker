@@ -1,0 +1,15 @@
+# Rust build output
+/target/
+
+# Large CC0 asset drops & cloned external repos
+/raw_assets/*
+!/raw_assets/README.md
+/external_assets/
+/*.zip
+
+# OS / editor noise
+.DS_Store
+*.swp
+*.swo
+.vscode/
+.idea/

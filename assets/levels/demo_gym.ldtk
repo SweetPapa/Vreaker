@@ -1,0 +1,1480 @@
+{
+  "__header__": {
+    "fileType": "LDtk Project JSON",
+    "app": "LDtk",
+    "doc": "https://ldtk.io/json",
+    "schema": "https://ldtk.io/files/JSON_SCHEMA.json",
+    "appAuthor": "Sebastien 'deepnight' Benard",
+    "appVersion": "1.5.3",
+    "url": "https://ldtk.io"
+  },
+  "iid": "8e21c3bc-ec7b-540c-b18f-e8700912eaa4",
+  "jsonVersion": "1.5.3",
+  "appBuildId": 473703.0,
+  "nextUid": 114,
+  "identifierStyle": "Capitalize",
+  "toc": [],
+  "worldLayout": "Free",
+  "worldGridWidth": 256,
+  "worldGridHeight": 256,
+  "defaultLevelWidth": 2240,
+  "defaultLevelHeight": 960,
+  "defaultPivotX": 0.0,
+  "defaultPivotY": 0.0,
+  "defaultGridSize": 16,
+  "defaultEntityWidth": 16,
+  "defaultEntityHeight": 16,
+  "bgColor": "#080A14",
+  "defaultLevelBgColor": "#080A14",
+  "minifyJson": false,
+  "externalLevels": false,
+  "exportTiled": false,
+  "simplifiedExport": false,
+  "imageExportMode": "None",
+  "exportLevelBg": true,
+  "pngFilePattern": null,
+  "backupOnSave": false,
+  "backupLimit": 10,
+  "backupRelPath": null,
+  "levelNamePattern": "Level_%idx",
+  "tutorialDesc": null,
+  "customCommands": [],
+  "flags": [],
+  "defs": {
+    "layers": [
+      {
+        "__type": "Entities",
+        "identifier": "Entities",
+        "type": "Entities",
+        "uid": 12,
+        "doc": null,
+        "uiColor": null,
+        "gridSize": 16,
+        "guideGridWid": 0,
+        "guideGridHei": 0,
+        "displayOpacity": 1.0,
+        "inactiveOpacity": 0.6,
+        "hideInList": false,
+        "hideFieldsWhenInactive": false,
+        "canSelectWhenInactive": true,
+        "renderInWorldView": true,
+        "pxOffsetX": 0,
+        "pxOffsetY": 0,
+        "parallaxFactorX": 0.0,
+        "parallaxFactorY": 0.0,
+        "parallaxScaling": true,
+        "requiredTags": [],
+        "excludedTags": [],
+        "autoTilesKilledByOtherLayerUid": null,
+        "uiFilterTags": [],
+        "useAsyncRender": false,
+        "intGridValues": [],
+        "intGridValuesGroups": [],
+        "autoRuleGroups": [],
+        "autoSourceLayerDefUid": null,
+        "tilesetDefUid": null,
+        "tilePivotX": 0.0,
+        "tilePivotY": 0.0,
+        "biomeFieldUid": null,
+        "autoTilesetDefUid": null
+      }
+    ],
+    "entities": [
+      {
+        "identifier": "PlayerSpawn",
+        "doc": null,
+        "tags": [],
+        "exportToToc": false,
+        "allowOutOfBounds": true,
+        "uid": 1,
+        "width": 16,
+        "height": 16,
+        "resizableX": true,
+        "resizableY": true,
+        "minWidth": null,
+        "maxWidth": null,
+        "minHeight": null,
+        "maxHeight": null,
+        "keepAspectRatio": false,
+        "tileOpacity": 1.0,
+        "fillOpacity": 0.45,
+        "lineOpacity": 1.0,
+        "hollow": false,
+        "color": "#33E0FF",
+        "renderMode": "Rectangle",
+        "showName": true,
+        "tilesetId": null,
+        "tileRenderMode": "FitInside",
+        "tileRect": null,
+        "uiTileRect": null,
+        "nineSliceBorders": [],
+        "maxCount": 0,
+        "limitScope": "PerLevel",
+        "limitBehavior": "MoveLastOne",
+        "pivotX": 0.0,
+        "pivotY": 0.0,
+        "fieldDefs": []
+      },
+      {
+        "identifier": "SolidBlock",
+        "doc": null,
+        "tags": [],
+        "exportToToc": false,
+        "allowOutOfBounds": true,
+        "uid": 2,
+        "width": 16,
+        "height": 16,
+        "resizableX": true,
+        "resizableY": true,
+        "minWidth": null,
+        "maxWidth": null,
+        "minHeight": null,
+        "maxHeight": null,
+        "keepAspectRatio": false,
+        "tileOpacity": 1.0,
+        "fillOpacity": 0.45,
+        "lineOpacity": 1.0,
+        "hollow": false,
+        "color": "#3B4A68",
+        "renderMode": "Rectangle",
+        "showName": true,
+        "tilesetId": null,
+        "tileRenderMode": "FitInside",
+        "tileRect": null,
+        "uiTileRect": null,
+        "nineSliceBorders": [],
+        "maxCount": 0,
+        "limitScope": "PerLevel",
+        "limitBehavior": "MoveLastOne",
+        "pivotX": 0.0,
+        "pivotY": 0.0,
+        "fieldDefs": []
+      },
+      {
+        "identifier": "Slope",
+        "doc": null,
+        "tags": [],
+        "exportToToc": false,
+        "allowOutOfBounds": true,
+        "uid": 3,
+        "width": 16,
+        "height": 16,
+        "resizableX": true,
+        "resizableY": true,
+        "minWidth": null,
+        "maxWidth": null,
+        "minHeight": null,
+        "maxHeight": null,
+        "keepAspectRatio": false,
+        "tileOpacity": 1.0,
+        "fillOpacity": 0.45,
+        "lineOpacity": 1.0,
+        "hollow": false,
+        "color": "#22D3EE",
+        "renderMode": "Rectangle",
+        "showName": true,
+        "tilesetId": null,
+        "tileRenderMode": "FitInside",
+        "tileRect": null,
+        "uiTileRect": null,
+        "nineSliceBorders": [],
+        "maxCount": 0,
+        "limitScope": "PerLevel",
+        "limitBehavior": "MoveLastOne",
+        "pivotX": 0.0,
+        "pivotY": 0.0,
+        "fieldDefs": []
+      },
+      {
+        "identifier": "BoostPad",
+        "doc": null,
+        "tags": [],
+        "exportToToc": false,
+        "allowOutOfBounds": true,
+        "uid": 4,
+        "width": 16,
+        "height": 16,
+        "resizableX": true,
+        "resizableY": true,
+        "minWidth": null,
+        "maxWidth": null,
+        "minHeight": null,
+        "maxHeight": null,
+        "keepAspectRatio": false,
+        "tileOpacity": 1.0,
+        "fillOpacity": 0.45,
+        "lineOpacity": 1.0,
+        "hollow": false,
+        "color": "#00F5FF",
+        "renderMode": "Rectangle",
+        "showName": true,
+        "tilesetId": null,
+        "tileRenderMode": "FitInside",
+        "tileRect": null,
+        "uiTileRect": null,
+        "nineSliceBorders": [],
+        "maxCount": 0,
+        "limitScope": "PerLevel",
+        "limitBehavior": "MoveLastOne",
+        "pivotX": 0.0,
+        "pivotY": 0.0,
+        "fieldDefs": []
+      },
+      {
+        "identifier": "LoopSpline",
+        "doc": null,
+        "tags": [],
+        "exportToToc": false,
+        "allowOutOfBounds": true,
+        "uid": 5,
+        "width": 16,
+        "height": 16,
+        "resizableX": true,
+        "resizableY": true,
+        "minWidth": null,
+        "maxWidth": null,
+        "minHeight": null,
+        "maxHeight": null,
+        "keepAspectRatio": false,
+        "tileOpacity": 1.0,
+        "fillOpacity": 0.45,
+        "lineOpacity": 1.0,
+        "hollow": false,
+        "color": "#38BDF8",
+        "renderMode": "Rectangle",
+        "showName": true,
+        "tilesetId": null,
+        "tileRenderMode": "FitInside",
+        "tileRect": null,
+        "uiTileRect": null,
+        "nineSliceBorders": [],
+        "maxCount": 0,
+        "limitScope": "PerLevel",
+        "limitBehavior": "MoveLastOne",
+        "pivotX": 0.0,
+        "pivotY": 0.0,
+        "fieldDefs": []
+      },
+      {
+        "identifier": "OneWayPlatform",
+        "doc": null,
+        "tags": [],
+        "exportToToc": false,
+        "allowOutOfBounds": true,
+        "uid": 6,
+        "width": 16,
+        "height": 16,
+        "resizableX": true,
+        "resizableY": true,
+        "minWidth": null,
+        "maxWidth": null,
+        "minHeight": null,
+        "maxHeight": null,
+        "keepAspectRatio": false,
+        "tileOpacity": 1.0,
+        "fillOpacity": 0.45,
+        "lineOpacity": 1.0,
+        "hollow": false,
+        "color": "#F59E0B",
+        "renderMode": "Rectangle",
+        "showName": true,
+        "tilesetId": null,
+        "tileRenderMode": "FitInside",
+        "tileRect": null,
+        "uiTileRect": null,
+        "nineSliceBorders": [],
+        "maxCount": 0,
+        "limitScope": "PerLevel",
+        "limitBehavior": "MoveLastOne",
+        "pivotX": 0.0,
+        "pivotY": 0.0,
+        "fieldDefs": []
+      },
+      {
+        "identifier": "MovingPlatform",
+        "doc": null,
+        "tags": [],
+        "exportToToc": false,
+        "allowOutOfBounds": true,
+        "uid": 7,
+        "width": 16,
+        "height": 16,
+        "resizableX": true,
+        "resizableY": true,
+        "minWidth": null,
+        "maxWidth": null,
+        "minHeight": null,
+        "maxHeight": null,
+        "keepAspectRatio": false,
+        "tileOpacity": 1.0,
+        "fillOpacity": 0.45,
+        "lineOpacity": 1.0,
+        "hollow": false,
+        "color": "#14B8A6",
+        "renderMode": "Rectangle",
+        "showName": true,
+        "tilesetId": null,
+        "tileRenderMode": "FitInside",
+        "tileRect": null,
+        "uiTileRect": null,
+        "nineSliceBorders": [],
+        "maxCount": 0,
+        "limitScope": "PerLevel",
+        "limitBehavior": "MoveLastOne",
+        "pivotX": 0.0,
+        "pivotY": 0.0,
+        "fieldDefs": []
+      },
+      {
+        "identifier": "SpikeHazard",
+        "doc": null,
+        "tags": [],
+        "exportToToc": false,
+        "allowOutOfBounds": true,
+        "uid": 8,
+        "width": 16,
+        "height": 16,
+        "resizableX": true,
+        "resizableY": true,
+        "minWidth": null,
+        "maxWidth": null,
+        "minHeight": null,
+        "maxHeight": null,
+        "keepAspectRatio": false,
+        "tileOpacity": 1.0,
+        "fillOpacity": 0.45,
+        "lineOpacity": 1.0,
+        "hollow": false,
+        "color": "#EF4444",
+        "renderMode": "Rectangle",
+        "showName": true,
+        "tilesetId": null,
+        "tileRenderMode": "FitInside",
+        "tileRect": null,
+        "uiTileRect": null,
+        "nineSliceBorders": [],
+        "maxCount": 0,
+        "limitScope": "PerLevel",
+        "limitBehavior": "MoveLastOne",
+        "pivotX": 0.0,
+        "pivotY": 0.0,
+        "fieldDefs": []
+      },
+      {
+        "identifier": "WallTurret",
+        "doc": null,
+        "tags": [],
+        "exportToToc": false,
+        "allowOutOfBounds": true,
+        "uid": 9,
+        "width": 16,
+        "height": 16,
+        "resizableX": true,
+        "resizableY": true,
+        "minWidth": null,
+        "maxWidth": null,
+        "minHeight": null,
+        "maxHeight": null,
+        "keepAspectRatio": false,
+        "tileOpacity": 1.0,
+        "fillOpacity": 0.45,
+        "lineOpacity": 1.0,
+        "hollow": false,
+        "color": "#F43F5E",
+        "renderMode": "Rectangle",
+        "showName": true,
+        "tilesetId": null,
+        "tileRenderMode": "FitInside",
+        "tileRect": null,
+        "uiTileRect": null,
+        "nineSliceBorders": [],
+        "maxCount": 0,
+        "limitScope": "PerLevel",
+        "limitBehavior": "MoveLastOne",
+        "pivotX": 0.0,
+        "pivotY": 0.0,
+        "fieldDefs": []
+      },
+      {
+        "identifier": "EnemySpawn",
+        "doc": null,
+        "tags": [],
+        "exportToToc": false,
+        "allowOutOfBounds": true,
+        "uid": 10,
+        "width": 16,
+        "height": 16,
+        "resizableX": true,
+        "resizableY": true,
+        "minWidth": null,
+        "maxWidth": null,
+        "minHeight": null,
+        "maxHeight": null,
+        "keepAspectRatio": false,
+        "tileOpacity": 1.0,
+        "fillOpacity": 0.45,
+        "lineOpacity": 1.0,
+        "hollow": false,
+        "color": "#FB7185",
+        "renderMode": "Rectangle",
+        "showName": true,
+        "tilesetId": null,
+        "tileRenderMode": "FitInside",
+        "tileRect": null,
+        "uiTileRect": null,
+        "nineSliceBorders": [],
+        "maxCount": 0,
+        "limitScope": "PerLevel",
+        "limitBehavior": "MoveLastOne",
+        "pivotX": 0.0,
+        "pivotY": 0.0,
+        "fieldDefs": []
+      },
+      {
+        "identifier": "BlastZone",
+        "doc": null,
+        "tags": [],
+        "exportToToc": false,
+        "allowOutOfBounds": true,
+        "uid": 11,
+        "width": 16,
+        "height": 16,
+        "resizableX": true,
+        "resizableY": true,
+        "minWidth": null,
+        "maxWidth": null,
+        "minHeight": null,
+        "maxHeight": null,
+        "keepAspectRatio": false,
+        "tileOpacity": 1.0,
+        "fillOpacity": 0.45,
+        "lineOpacity": 1.0,
+        "hollow": false,
+        "color": "#A855F7",
+        "renderMode": "Rectangle",
+        "showName": true,
+        "tilesetId": null,
+        "tileRenderMode": "FitInside",
+        "tileRect": null,
+        "uiTileRect": null,
+        "nineSliceBorders": [],
+        "maxCount": 0,
+        "limitScope": "PerLevel",
+        "limitBehavior": "MoveLastOne",
+        "pivotX": 0.0,
+        "pivotY": 0.0,
+        "fieldDefs": []
+      }
+    ],
+    "tilesets": [],
+    "enums": [],
+    "externalEnums": [],
+    "levelFields": []
+  },
+  "levels": [
+    {
+      "identifier": "TheFoundryGym",
+      "iid": "c7081531-ba7d-5474-baf3-1169fafe3a96",
+      "uid": 13,
+      "worldX": 0,
+      "worldY": 0,
+      "worldDepth": 0,
+      "pxWid": 2240,
+      "pxHei": 960,
+      "__bgColor": "#080A14",
+      "bgColor": null,
+      "useAutoIdentifier": false,
+      "bgRelPath": null,
+      "bgPos": null,
+      "bgPivotX": 0.5,
+      "bgPivotY": 0.5,
+      "__smartColor": "#22D3EE",
+      "__bgPos": null,
+      "externalRelPath": null,
+      "fieldInstances": [],
+      "layerInstances": [
+        {
+          "__identifier": "Entities",
+          "__type": "Entities",
+          "__cWid": 140,
+          "__cHei": 60,
+          "__gridSize": 16,
+          "__opacity": 1.0,
+          "__pxTotalOffsetX": 0,
+          "__pxTotalOffsetY": 0,
+          "__tilesetDefUid": null,
+          "__tilesetRelPath": null,
+          "iid": "191ff2d3-924b-5cec-b9a0-d3e60bb9d338",
+          "levelId": 13,
+          "layerDefUid": 12,
+          "pxOffsetX": 0,
+          "pxOffsetY": 0,
+          "visible": true,
+          "optionalRules": [],
+          "intGridCsv": [],
+          "autoLayerTiles": [],
+          "seed": 42,
+          "overrideTilesetUid": null,
+          "gridTiles": [],
+          "entityInstances": [
+            {
+              "__identifier": "PlayerSpawn",
+              "__grid": [
+                7,
+                41
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#33E0FF",
+              "__worldX": 118,
+              "__worldY": 668,
+              "iid": "c43c7df6-9546-5c30-9190-8ec74e889a77",
+              "width": 24,
+              "height": 24,
+              "defUid": 1,
+              "px": [
+                118,
+                668
+              ],
+              "fieldInstances": []
+            },
+            {
+              "__identifier": "SolidBlock",
+              "__grid": [
+                2,
+                43
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#3B4A68",
+              "__worldX": 40,
+              "__worldY": 700,
+              "iid": "54762ae6-19af-5826-8537-68c56b7135bb",
+              "width": 180,
+              "height": 40,
+              "defUid": 2,
+              "px": [
+                40,
+                700
+              ],
+              "fieldInstances": []
+            },
+            {
+              "__identifier": "SolidBlock",
+              "__grid": [
+                0,
+                28
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#3B4A68",
+              "__worldX": 12,
+              "__worldY": 460,
+              "iid": "9da680ff-ee0c-5e5c-ba40-ba29ac101469",
+              "width": 28,
+              "height": 280,
+              "defUid": 2,
+              "px": [
+                12,
+                460
+              ],
+              "fieldInstances": []
+            },
+            {
+              "__identifier": "OneWayPlatform",
+              "__grid": [
+                5,
+                40
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#F59E0B",
+              "__worldX": 83,
+              "__worldY": 641,
+              "iid": "0066ed4e-cd04-566b-a1b3-1d2c16759ec6",
+              "width": 104,
+              "height": 6,
+              "defUid": 6,
+              "px": [
+                83,
+                641
+              ],
+              "fieldInstances": []
+            },
+            {
+              "__identifier": "Slope",
+              "__grid": [
+                13,
+                43
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#22D3EE",
+              "__worldX": 212,
+              "__worldY": 692,
+              "iid": "58299d92-7d94-5c5e-b37c-2fd07abc173d",
+              "width": 16,
+              "height": 16,
+              "defUid": 3,
+              "px": [
+                212,
+                692
+              ],
+              "fieldInstances": [
+                {
+                  "__identifier": "start_x",
+                  "__type": "Float",
+                  "__value": -140.0,
+                  "__tile": null,
+                  "defUid": 501,
+                  "realEditorValues": []
+                },
+                {
+                  "__identifier": "start_y",
+                  "__type": "Float",
+                  "__value": 0.0,
+                  "__tile": null,
+                  "defUid": 502,
+                  "realEditorValues": []
+                },
+                {
+                  "__identifier": "end_x",
+                  "__type": "Float",
+                  "__value": 60.0,
+                  "__tile": null,
+                  "defUid": 503,
+                  "realEditorValues": []
+                },
+                {
+                  "__identifier": "end_y",
+                  "__type": "Float",
+                  "__value": -100.0,
+                  "__tile": null,
+                  "defUid": 504,
+                  "realEditorValues": []
+                }
+              ]
+            },
+            {
+              "__identifier": "SolidBlock",
+              "__grid": [
+                26,
+                50
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#3B4A68",
+              "__worldX": 420,
+              "__worldY": 800,
+              "iid": "4efd0f61-a6b4-5073-a6f6-0fbc7083762f",
+              "width": 600,
+              "height": 32,
+              "defUid": 2,
+              "px": [
+                420,
+                800
+              ],
+              "fieldInstances": []
+            },
+            {
+              "__identifier": "BoostPad",
+              "__grid": [
+                32,
+                49
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#00F5FF",
+              "__worldX": 517,
+              "__worldY": 788,
+              "iid": "a2054753-f154-5f53-9778-2d707431ecf0",
+              "width": 56,
+              "height": 12,
+              "defUid": 4,
+              "px": [
+                517,
+                788
+              ],
+              "fieldInstances": [
+                {
+                  "__identifier": "target_speed",
+                  "__type": "Float",
+                  "__value": 515.0,
+                  "__tile": null,
+                  "defUid": 505,
+                  "realEditorValues": []
+                },
+                {
+                  "__identifier": "dir_x",
+                  "__type": "Float",
+                  "__value": 1.0,
+                  "__tile": null,
+                  "defUid": 506,
+                  "realEditorValues": []
+                }
+              ]
+            },
+            {
+              "__identifier": "LoopSpline",
+              "__grid": [
+                44,
+                40
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#38BDF8",
+              "__worldX": 714,
+              "__worldY": 648,
+              "iid": "4a035c1f-e2e0-5d85-8dcb-faa002e72930",
+              "width": 152,
+              "height": 152,
+              "defUid": 5,
+              "px": [
+                714,
+                648
+              ],
+              "fieldInstances": [
+                {
+                  "__identifier": "loop_id",
+                  "__type": "Int",
+                  "__value": 1,
+                  "__tile": null,
+                  "defUid": 507,
+                  "realEditorValues": []
+                },
+                {
+                  "__identifier": "center_x",
+                  "__type": "Float",
+                  "__value": 430.0,
+                  "__tile": null,
+                  "defUid": 508,
+                  "realEditorValues": []
+                },
+                {
+                  "__identifier": "center_y",
+                  "__type": "Float",
+                  "__value": -24.0,
+                  "__tile": null,
+                  "defUid": 509,
+                  "realEditorValues": []
+                },
+                {
+                  "__identifier": "radius",
+                  "__type": "Float",
+                  "__value": 76.0,
+                  "__tile": null,
+                  "defUid": 510,
+                  "realEditorValues": []
+                },
+                {
+                  "__identifier": "approach_lead",
+                  "__type": "Float",
+                  "__value": 48.0,
+                  "__tile": null,
+                  "defUid": 511,
+                  "realEditorValues": []
+                },
+                {
+                  "__identifier": "min_speed",
+                  "__type": "Float",
+                  "__value": 420.0,
+                  "__tile": null,
+                  "defUid": 512,
+                  "realEditorValues": []
+                }
+              ]
+            },
+            {
+              "__identifier": "BoostPad",
+              "__grid": [
+                57,
+                49
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#00F5FF",
+              "__worldX": 921,
+              "__worldY": 788,
+              "iid": "a54e5ea2-965c-5bde-8f4b-6a621e85f00d",
+              "width": 48,
+              "height": 12,
+              "defUid": 4,
+              "px": [
+                921,
+                788
+              ],
+              "fieldInstances": [
+                {
+                  "__identifier": "target_speed",
+                  "__type": "Float",
+                  "__value": 475.0,
+                  "__tile": null,
+                  "defUid": 505,
+                  "realEditorValues": []
+                },
+                {
+                  "__identifier": "dir_x",
+                  "__type": "Float",
+                  "__value": 1.0,
+                  "__tile": null,
+                  "defUid": 506,
+                  "realEditorValues": []
+                }
+              ]
+            },
+            {
+              "__identifier": "Slope",
+              "__grid": [
+                62,
+                49
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#22D3EE",
+              "__worldX": 992,
+              "__worldY": 792,
+              "iid": "ccabba65-b3cb-52e0-a550-13ff7b9b0eaf",
+              "width": 16,
+              "height": 16,
+              "defUid": 3,
+              "px": [
+                992,
+                792
+              ],
+              "fieldInstances": [
+                {
+                  "__identifier": "start_x",
+                  "__type": "Float",
+                  "__value": 640.0,
+                  "__tile": null,
+                  "defUid": 501,
+                  "realEditorValues": []
+                },
+                {
+                  "__identifier": "start_y",
+                  "__type": "Float",
+                  "__value": -100.0,
+                  "__tile": null,
+                  "defUid": 502,
+                  "realEditorValues": []
+                },
+                {
+                  "__identifier": "end_x",
+                  "__type": "Float",
+                  "__value": 765.0,
+                  "__tile": null,
+                  "defUid": 503,
+                  "realEditorValues": []
+                },
+                {
+                  "__identifier": "end_y",
+                  "__type": "Float",
+                  "__value": -42.0,
+                  "__tile": null,
+                  "defUid": 504,
+                  "realEditorValues": []
+                }
+              ]
+            },
+            {
+              "__identifier": "SolidBlock",
+              "__grid": [
+                70,
+                48
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#3B4A68",
+              "__worldX": 1135,
+              "__worldY": 780,
+              "iid": "3003e9a6-13ad-5319-8e77-34381ef3f5fe",
+              "width": 230,
+              "height": 40,
+              "defUid": 2,
+              "px": [
+                1135,
+                780
+              ],
+              "fieldInstances": []
+            },
+            {
+              "__identifier": "SolidBlock",
+              "__grid": [
+                72,
+                23
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#3B4A68",
+              "__worldX": 1160,
+              "__worldY": 380,
+              "iid": "936a80a0-bc44-5439-89cc-1cf1efb838cc",
+              "width": 28,
+              "height": 296,
+              "defUid": 2,
+              "px": [
+                1160,
+                380
+              ],
+              "fieldInstances": []
+            },
+            {
+              "__identifier": "SolidBlock",
+              "__grid": [
+                82,
+                30
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#3B4A68",
+              "__worldX": 1316,
+              "__worldY": 480,
+              "iid": "49d83371-f9f7-5c83-919d-0949bbcaa6e1",
+              "width": 28,
+              "height": 300,
+              "defUid": 2,
+              "px": [
+                1316,
+                480
+              ],
+              "fieldInstances": []
+            },
+            {
+              "__identifier": "SpikeHazard",
+              "__grid": [
+                79,
+                48
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#EF4444",
+              "__worldX": 1272,
+              "__worldY": 768,
+              "iid": "b9915c4d-0e0b-557d-aea1-a4bd5056335b",
+              "width": 42,
+              "height": 12,
+              "defUid": 8,
+              "px": [
+                1272,
+                768
+              ],
+              "fieldInstances": []
+            },
+            {
+              "__identifier": "SolidBlock",
+              "__grid": [
+                74,
+                36
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#3B4A68",
+              "__worldX": 1188,
+              "__worldY": 584,
+              "iid": "1dd376a8-b553-5cfa-8e05-95cdd2bf8adc",
+              "width": 36,
+              "height": 10,
+              "defUid": 2,
+              "px": [
+                1188,
+                584
+              ],
+              "fieldInstances": []
+            },
+            {
+              "__identifier": "SpikeHazard",
+              "__grid": [
+                74,
+                35
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#EF4444",
+              "__worldX": 1190,
+              "__worldY": 572,
+              "iid": "894bd0b6-2a1a-5fd4-b4f8-e74ced98fb94",
+              "width": 32,
+              "height": 12,
+              "defUid": 8,
+              "px": [
+                1190,
+                572
+              ],
+              "fieldInstances": []
+            },
+            {
+              "__identifier": "MovingPlatform",
+              "__grid": [
+                76,
+                42
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#14B8A6",
+              "__worldX": 1220,
+              "__worldY": 684,
+              "iid": "1bd34860-6dca-5d76-9ecb-9b5955597920",
+              "width": 56,
+              "height": 6,
+              "defUid": 7,
+              "px": [
+                1220,
+                684
+              ],
+              "fieldInstances": [
+                {
+                  "__identifier": "travel_x",
+                  "__type": "Float",
+                  "__value": 26.0,
+                  "__tile": null,
+                  "defUid": 520,
+                  "realEditorValues": []
+                },
+                {
+                  "__identifier": "travel_y",
+                  "__type": "Float",
+                  "__value": 0.0,
+                  "__tile": null,
+                  "defUid": 521,
+                  "realEditorValues": []
+                },
+                {
+                  "__identifier": "speed",
+                  "__type": "Float",
+                  "__value": 2.0,
+                  "__tile": null,
+                  "defUid": 522,
+                  "realEditorValues": []
+                }
+              ]
+            },
+            {
+              "__identifier": "MovingPlatform",
+              "__grid": [
+                77,
+                35
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#14B8A6",
+              "__worldX": 1232,
+              "__worldY": 572,
+              "iid": "3d11118f-987b-5cc3-8f6f-aae3464eb52f",
+              "width": 56,
+              "height": 6,
+              "defUid": 7,
+              "px": [
+                1232,
+                572
+              ],
+              "fieldInstances": [
+                {
+                  "__identifier": "travel_x",
+                  "__type": "Float",
+                  "__value": 0.0,
+                  "__tile": null,
+                  "defUid": 520,
+                  "realEditorValues": []
+                },
+                {
+                  "__identifier": "travel_y",
+                  "__type": "Float",
+                  "__value": 74.0,
+                  "__tile": null,
+                  "defUid": 521,
+                  "realEditorValues": []
+                },
+                {
+                  "__identifier": "speed",
+                  "__type": "Float",
+                  "__value": 1.7,
+                  "__tile": null,
+                  "defUid": 522,
+                  "realEditorValues": []
+                }
+              ]
+            },
+            {
+              "__identifier": "WallTurret",
+              "__grid": [
+                74,
+                39
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#F43F5E",
+              "__worldX": 1188,
+              "__worldY": 624,
+              "iid": "e5a3bed6-cede-5e5d-8ce5-65fcc38e15a0",
+              "width": 20,
+              "height": 20,
+              "defUid": 9,
+              "px": [
+                1188,
+                624
+              ],
+              "fieldInstances": [
+                {
+                  "__identifier": "facing",
+                  "__type": "Float",
+                  "__value": 1.0,
+                  "__tile": null,
+                  "defUid": 530,
+                  "realEditorValues": []
+                }
+              ]
+            },
+            {
+              "__identifier": "WallTurret",
+              "__grid": [
+                81,
+                32
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#F43F5E",
+              "__worldX": 1296,
+              "__worldY": 522,
+              "iid": "ba75aafe-4fc5-5957-8a03-49fbd178ccd0",
+              "width": 20,
+              "height": 20,
+              "defUid": 9,
+              "px": [
+                1296,
+                522
+              ],
+              "fieldInstances": [
+                {
+                  "__identifier": "facing",
+                  "__type": "Float",
+                  "__value": -1.0,
+                  "__tile": null,
+                  "defUid": 530,
+                  "realEditorValues": []
+                }
+              ]
+            },
+            {
+              "__identifier": "SolidBlock",
+              "__grid": [
+                82,
+                30
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#3B4A68",
+              "__worldX": 1316,
+              "__worldY": 480,
+              "iid": "6fcaf92a-178b-55c9-955a-ce134d9a776c",
+              "width": 124,
+              "height": 24,
+              "defUid": 2,
+              "px": [
+                1316,
+                480
+              ],
+              "fieldInstances": []
+            },
+            {
+              "__identifier": "SolidBlock",
+              "__grid": [
+                93,
+                30
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#3B4A68",
+              "__worldX": 1490,
+              "__worldY": 480,
+              "iid": "3ef8a9f3-7e4a-53cc-92e4-6e67c3f16c87",
+              "width": 520,
+              "height": 24,
+              "defUid": 2,
+              "px": [
+                1490,
+                480
+              ],
+              "fieldInstances": []
+            },
+            {
+              "__identifier": "OneWayPlatform",
+              "__grid": [
+                97,
+                26
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#F59E0B",
+              "__worldX": 1557,
+              "__worldY": 421,
+              "iid": "b3b7a6fd-6c17-5d14-b6c9-6a28f2a586e2",
+              "width": 96,
+              "height": 6,
+              "defUid": 6,
+              "px": [
+                1557,
+                421
+              ],
+              "fieldInstances": []
+            },
+            {
+              "__identifier": "OneWayPlatform",
+              "__grid": [
+                115,
+                26
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#F59E0B",
+              "__worldX": 1847,
+              "__worldY": 421,
+              "iid": "9644b193-f93b-5aa2-ad38-b1b488c18bb6",
+              "width": 96,
+              "height": 6,
+              "defUid": 6,
+              "px": [
+                1847,
+                421
+              ],
+              "fieldInstances": []
+            },
+            {
+              "__identifier": "OneWayPlatform",
+              "__grid": [
+                105,
+                22
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#F59E0B",
+              "__worldX": 1692,
+              "__worldY": 361,
+              "iid": "9dccc07d-345a-5540-9128-0b9fed79d120",
+              "width": 116,
+              "height": 6,
+              "defUid": 6,
+              "px": [
+                1692,
+                361
+              ],
+              "fieldInstances": []
+            },
+            {
+              "__identifier": "EnemySpawn",
+              "__grid": [
+                103,
+                28
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#FB7185",
+              "__worldX": 1658,
+              "__worldY": 448,
+              "iid": "074abd08-dc6e-57d7-b7e0-a0a89f8139e9",
+              "width": 24,
+              "height": 24,
+              "defUid": 10,
+              "px": [
+                1658,
+                448
+              ],
+              "fieldInstances": [
+                {
+                  "__identifier": "archetype",
+                  "__type": "String",
+                  "__value": "light",
+                  "__tile": null,
+                  "defUid": 540,
+                  "realEditorValues": []
+                }
+              ]
+            },
+            {
+              "__identifier": "EnemySpawn",
+              "__grid": [
+                115,
+                28
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#FB7185",
+              "__worldX": 1848,
+              "__worldY": 448,
+              "iid": "b6c6a8c0-f81a-5fc2-b27c-950f204d8acf",
+              "width": 24,
+              "height": 24,
+              "defUid": 10,
+              "px": [
+                1848,
+                448
+              ],
+              "fieldInstances": [
+                {
+                  "__identifier": "archetype",
+                  "__type": "String",
+                  "__value": "heavy",
+                  "__tile": null,
+                  "defUid": 540,
+                  "realEditorValues": []
+                }
+              ]
+            },
+            {
+              "__identifier": "BlastZone",
+              "__grid": [
+                87,
+                11
+              ],
+              "__pivot": [
+                0.0,
+                0.0
+              ],
+              "__tags": [],
+              "__tile": null,
+              "__smartColor": "#A855F7",
+              "__worldX": 1395,
+              "__worldY": 190,
+              "iid": "d95ee14d-2bed-5116-9ef4-e51160f0a605",
+              "width": 730,
+              "height": 470,
+              "defUid": 11,
+              "px": [
+                1395,
+                190
+              ],
+              "fieldInstances": [
+                {
+                  "__identifier": "arena_center_x",
+                  "__type": "Float",
+                  "__value": 1390.0,
+                  "__tile": null,
+                  "defUid": 550,
+                  "realEditorValues": []
+                },
+                {
+                  "__identifier": "arena_center_y",
+                  "__type": "Float",
+                  "__value": 290.0,
+                  "__tile": null,
+                  "defUid": 551,
+                  "realEditorValues": []
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "__neighbours": []
+    }
+  ],
+  "worlds": [],
+  "dummyWorldIid": "a71ee51a-a4d1-5c2d-b90f-b080de96a3d9"
+}

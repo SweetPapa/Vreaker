@@ -16,8 +16,8 @@ use crate::combat::{
 };
 use crate::physics::{
     BreakableWall, CheckpointBeacon, CollectibleItem, CollectibleKind, HazardBeamPhase,
-    KinematicBody, MovementEvent, MovementFxKind, MovementState, SolidRect, SpikeHazard,
-    TimedHazardBeam,
+    KinematicBody, MovementEvent, MovementFxKind, MovementState, OneWayPlatform, SlopeSegment,
+    SolidRect, SpikeHazard, TimedHazardBeam,
 };
 use crate::player::{DEFAULT_PLAYER_SPAWN, Player};
 use crate::state::{AppState, GameStateCommand, StageRestartEvent};
@@ -1670,10 +1670,59 @@ fn update_boss_ai(
     }
 }
 
-#[allow(clippy::type_complexity)]
+/// Returns `true` if there is a walkable solid deck, one-way catwalk, or slope surface
+/// beneath `probe_x` near `feet_y`, preventing AI fighters from voluntarily walking,
+/// kiting, blinking, or lunging off platform ledges.
+fn has_walkable_ground_at(
+    probe_x: f32,
+    feet_y: f32,
+    solids: &[SolidRect],
+    one_ways: &[OneWayPlatform],
+    slopes: &[SlopeSegment],
+) -> bool {
+    let min_top = feet_y - 26.0;
+    let max_top = feet_y + 18.0;
+
+    if solids.iter().any(|s| {
+        let min = s.min();
+        let max = s.max();
+        probe_x >= min.x + 2.0 && probe_x <= max.x - 2.0 && max.y >= min_top && max.y <= max_top
+    }) {
+        return true;
+    }
+
+    if one_ways.iter().any(|p| {
+        let top = p.top_y();
+        probe_x >= p.min_x() + 2.0
+            && probe_x <= p.max_x() - 2.0
+            && top >= min_top
+            && top <= max_top
+    }) {
+        return true;
+    }
+
+    slopes.iter().any(|sl| {
+        sl.sample_y(probe_x)
+            .is_some_and(|sy| sy >= min_top && sy <= max_top)
+    })
+}
+
+/// Returns `true` if a solid wall blocks horizontal movement at `(probe_x, body_y)`.
+fn has_blocking_wall_at(probe_x: f32, body_y: f32, solids: &[SolidRect]) -> bool {
+    solids.iter().any(|s| {
+        let min = s.min();
+        let max = s.max();
+        probe_x >= min.x && probe_x <= max.x && body_y >= min.y + 4.0 && body_y <= max.y - 4.0
+    })
+}
+
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn update_enemy_fighter_ai(
     mut commands: Commands,
     fixed_time: Res<Time<Fixed>>,
+    solids_q: Query<&SolidRect>,
+    one_ways_q: Query<&OneWayPlatform>,
+    slopes_q: Query<&SlopeSegment>,
     players: Query<&KinematicBody, (With<Player>, Without<EnemyFighter>)>,
     mut vis_events: MessageWriter<CombatVisualEvent>,
     mut enemies: Query<
@@ -1689,6 +1738,10 @@ fn update_enemy_fighter_ai(
 ) {
     let dt = fixed_time.delta_secs();
     let player_pos = players.single().map(|p| p.position).ok();
+    let solids: Vec<SolidRect> = solids_q.iter().copied().collect();
+    let one_ways: Vec<OneWayPlatform> = one_ways_q.iter().copied().collect();
+    let slopes: Vec<SlopeSegment> = slopes_q.iter().copied().collect();
+    let has_geometry = !solids.is_empty() || !one_ways.is_empty() || !slopes.is_empty();
 
     for (entity, mut fighter, mut body, hitstop, hitstun) in &mut enemies {
         if hitstop.is_some_and(Hitstop::is_active) {
@@ -1719,9 +1772,21 @@ fn update_enemy_fighter_ai(
             (fighter.home_pos.x - leash, fighter.home_pos.x + leash)
         };
 
+        let body_pos = body.position;
+        let body_half_x = body.half_extents.x;
+        let feet_y = body.feet_y();
+        let can_step_dir = |dir: f32, lookahead: f32| -> bool {
+            if !has_geometry || dir.abs() < 0.1 {
+                return true;
+            }
+            let probe_x = body_pos.x + dir.signum() * (body_half_x + lookahead);
+            has_walkable_ground_at(probe_x, feet_y, &solids, &one_ways, &slopes)
+                && !has_blocking_wall_at(probe_x, body_pos.y, &solids)
+        };
+
         match fighter.state {
             EnemyAiState::Patrol => {
-                // Active sentinel pacing around home post so idle enemies look alive instead of frozen statues!
+                // Active sentinel pacing around home post, strictly honoring real platform ledges & walls!
                 let patrol_half = 44.0_f32;
                 let p_min = (fighter.home_pos.x - patrol_half).max(arena_min_x + 8.0);
                 let p_max = (fighter.home_pos.x + patrol_half).min(arena_max_x - 8.0);
@@ -1731,9 +1796,17 @@ fn update_enemy_fighter_ai(
                     } else if body.position.x >= p_max {
                         body.facing = -1.0;
                     }
-                    let pace = body.facing * fighter.archetype.move_speed() * 0.42;
-                    body.ground_speed = pace;
-                    body.velocity.x = pace;
+                    if !can_step_dir(body.facing, 10.0) {
+                        body.facing = -body.facing;
+                    }
+                    if can_step_dir(body.facing, 10.0) {
+                        let pace = body.facing * fighter.archetype.move_speed() * 0.42;
+                        body.ground_speed = pace;
+                        body.velocity.x = pace;
+                    } else {
+                        body.ground_speed = 0.0;
+                        body.velocity.x = 0.0;
+                    }
                 } else {
                     body.ground_speed *= (1.0 - dt * 6.0).max(0.0);
                 }
@@ -1754,29 +1827,50 @@ fn update_enemy_fighter_ai(
                 };
                 body.facing = desired_dir;
 
-                // ArcaneZoner kites back to mid-range and Phase-Blinks away when rushed!
+                // ArcaneZoner kites back to mid-range and Phase-Blinks safely onto walkable floor when rushed!
                 if fighter.archetype == EnemyArchetype::ArcaneZoner {
                     if dist < 72.0 && fighter.special_cooldown <= 0.0 {
                         let from = body.position;
                         let retreat_dir = -desired_dir;
-                        let target_x =
+                        let mut target_x =
                             (body.position.x + retreat_dir * 125.0).clamp(arena_min_x, arena_max_x);
-                        body.position.x = target_x;
-                        body.velocity = Vec2::new(retreat_dir * 45.0, 95.0);
-                        body.ground_speed = 0.0;
-                        body.state = MovementState::Airborne;
-                        fighter.special_cooldown = 2.6;
-                        commands.entity(entity).insert(Invulnerable::new(0.20));
-                        vis_events.write(CombatVisualEvent::EnemyBlink {
-                            from,
-                            to: body.position,
-                        });
-                        vis_events.write(CombatVisualEvent::ShockwaveRing {
-                            pos: body.position,
-                            max_radius: 30.0,
-                            color_rgb: [3.6, 0.55, 5.2],
-                        });
-                        continue;
+                        if has_geometry {
+                            // Step inward until landing point sits safely on walkable ground
+                            let mut found_safe = None;
+                            for frac in [1.0_f32, 0.78, 0.56, 0.35] {
+                                let cand = (body.position.x + retreat_dir * 125.0 * frac)
+                                    .clamp(arena_min_x, arena_max_x);
+                                if has_walkable_ground_at(cand, feet_y, &solids, &one_ways, &slopes)
+                                    && !has_blocking_wall_at(cand, body.position.y, &solids)
+                                {
+                                    found_safe = Some(cand);
+                                    break;
+                                }
+                            }
+                            if let Some(safe) = found_safe {
+                                target_x = safe;
+                            } else {
+                                target_x = body.position.x;
+                            }
+                        }
+                        if (target_x - body.position.x).abs() > 16.0 {
+                            body.position.x = target_x;
+                            body.velocity = Vec2::new(retreat_dir * 32.0, 85.0);
+                            body.ground_speed = 0.0;
+                            body.state = MovementState::Airborne;
+                            fighter.special_cooldown = 2.6;
+                            commands.entity(entity).insert(Invulnerable::new(0.20));
+                            vis_events.write(CombatVisualEvent::EnemyBlink {
+                                from,
+                                to: body.position,
+                            });
+                            vis_events.write(CombatVisualEvent::ShockwaveRing {
+                                pos: body.position,
+                                max_radius: 30.0,
+                                color_rgb: [3.6, 0.55, 5.2],
+                            });
+                            continue;
+                        }
                     }
 
                     let move_dir = if dist < 115.0 {
@@ -1787,7 +1881,10 @@ fn update_enemy_fighter_ai(
                         0.0
                     };
                     let at_edge = (body.position.x <= arena_min_x && move_dir < 0.0)
-                        || (body.position.x >= arena_max_x && move_dir > 0.0);
+                        || (body.position.x >= arena_max_x && move_dir > 0.0)
+                        || (body.state == MovementState::Grounded
+                            && move_dir != 0.0
+                            && !can_step_dir(move_dir, 12.0));
                     let target_spd = if at_edge {
                         0.0
                     } else {
@@ -1820,9 +1917,10 @@ fn update_enemy_fighter_ai(
                     continue;
                 }
 
-                // Stop before walking off deck edge; otherwise pursue aggressively
+                // Stop cleanly before walking off any real platform/deck ledge; otherwise pursue aggressively
                 let at_edge = (body.position.x <= arena_min_x && desired_dir < 0.0)
-                    || (body.position.x >= arena_max_x && desired_dir > 0.0);
+                    || (body.position.x >= arena_max_x && desired_dir > 0.0)
+                    || (body.state == MovementState::Grounded && !can_step_dir(desired_dir, 12.0));
                 let target_spd = if at_edge {
                     0.0
                 } else {
@@ -1840,7 +1938,8 @@ fn update_enemy_fighter_ai(
                     );
                     if can_hop
                         && delta.y > 40.0
-                        && delta.x.abs() < 135.0
+                        && delta.x.abs() < 110.0
+                        && (can_step_dir(desired_dir, 14.0) || delta.x.abs() < 44.0)
                         && fighter.jump_cooldown <= 0.0
                     {
                         body.velocity.y = 405.0;
@@ -1926,10 +2025,10 @@ fn update_enemy_fighter_ai(
                             && body.state == MovementState::Grounded
                             && fighter.special_cooldown <= 0.0
                         {
-                            // Agile Backstep Evade Roll! Leaps safely back before rushing in!
+                            // Agile Backstep Evade Roll — only if walkable ground exists behind!
                             let back = -desired_dir;
-                            let safe_x = (body.position.x + back * 22.0).clamp(arena_min_x, arena_max_x);
-                            if (safe_x - body.position.x).abs() > 8.0 {
+                            let safe_x = (body.position.x + back * 36.0).clamp(arena_min_x, arena_max_x);
+                            if (safe_x - body.position.x).abs() > 12.0 && can_step_dir(back, 22.0) {
                                 body.ground_speed = back * 210.0;
                                 body.velocity.x = body.ground_speed;
                                 fighter.attack_variant = 5;
@@ -2049,7 +2148,11 @@ fn update_enemy_fighter_ai(
                         }
                         3 => {
                             let dive = body.state == MovementState::Airborne && delta.y < -20.0;
-                            let dash_vx = body.facing * 305.0;
+                            let dash_vx = if dive || can_step_dir(body.facing, 18.0) {
+                                body.facing * 305.0
+                            } else {
+                                0.0
+                            };
                             body.ground_speed = dash_vx;
                             body.velocity.x = dash_vx;
                             if dive {
@@ -2099,7 +2202,13 @@ fn update_enemy_fighter_ai(
                         }
                         // 6: Iron Brawler 360° Whirlwind Greataxe Spin!
                         6 => {
-                            body.ground_speed = body.facing * 125.0;
+                            body.ground_speed = if body.state != MovementState::Grounded
+                                || can_step_dir(body.facing, 14.0)
+                            {
+                                body.facing * 125.0
+                            } else {
+                                0.0
+                            };
                             body.velocity.x = body.ground_speed;
                             commands.spawn((
                                 Name::new("BrawlerWhirlwindHitbox"),
@@ -2153,11 +2262,16 @@ fn update_enemy_fighter_ai(
                             fighter.special_cooldown = 2.2;
                             fighter.state = EnemyAiState::Attacking { remaining: 0.24 };
                         }
-                        // 8: Shadow Assassin Smoke Backflip + Crimson Kunai Bolt!
+                        // 8: Shadow Assassin Smoke Backflip + Crimson Kunai Bolt (stay on platform!)
                         8 => {
                             let back = -body.facing;
-                            body.ground_speed = back * 185.0;
-                            body.velocity = Vec2::new(back * 185.0, 165.0);
+                            if can_step_dir(back, 36.0) {
+                                body.ground_speed = back * 185.0;
+                                body.velocity = Vec2::new(back * 185.0, 165.0);
+                            } else {
+                                body.ground_speed = 0.0;
+                                body.velocity = Vec2::new(0.0, 155.0);
+                            }
                             body.state = MovementState::Airborne;
                             commands.entity(entity).insert(Invulnerable::new(0.16));
                             let aim_dir = (p_pos - body.position)
@@ -2204,7 +2318,13 @@ fn update_enemy_fighter_ai(
                         _ => {
                             let is_heavy = fighter.archetype == EnemyArchetype::HeavyBrawler;
                             let lunge = if is_heavy { 110.0 } else { 190.0 };
-                            body.ground_speed = body.facing * lunge;
+                            body.ground_speed = if body.state != MovementState::Grounded
+                                || can_step_dir(body.facing, 12.0)
+                            {
+                                body.facing * lunge
+                            } else {
+                                0.0
+                            };
                             body.velocity.x = body.ground_speed;
 
                             let offset = Vec2::new(if is_heavy { 26.0 } else { 22.0 }, 2.0);
@@ -2255,10 +2375,12 @@ fn update_enemy_fighter_ai(
                 }
             }
             EnemyAiState::Attacking { mut remaining } => {
-                // Clamp advancing Brawler whirlwind & Rogue backstep safely inside arena bounds
-                if fighter.attack_variant == 6 || fighter.attack_variant == 5 {
-                    let at_edge = (body.position.x <= arena_min_x + 4.0 && body.ground_speed < 0.0)
-                        || (body.position.x >= arena_max_x - 4.0 && body.ground_speed > 0.0);
+                // Never let a grounded enemy melee lunge, dash, whirlwind, or evade step off a cliff!
+                if body.state == MovementState::Grounded && body.ground_speed.abs() > 1.0 {
+                    let move_dir = body.ground_speed.signum();
+                    let at_edge = (body.position.x <= arena_min_x + 4.0 && move_dir < 0.0)
+                        || (body.position.x >= arena_max_x - 4.0 && move_dir > 0.0)
+                        || !can_step_dir(move_dir, 10.0);
                     if at_edge {
                         body.ground_speed = 0.0;
                         body.velocity.x = 0.0;
@@ -2278,7 +2400,13 @@ fn update_enemy_fighter_ai(
                         } else {
                             body.facing
                         };
-                        body.ground_speed = body.facing * 175.0;
+                        body.ground_speed = if body.state != MovementState::Grounded
+                            || can_step_dir(body.facing, 12.0)
+                        {
+                            body.facing * 175.0
+                        } else {
+                            0.0
+                        };
                         body.velocity.x = body.ground_speed;
                         let offset = Vec2::new(24.0, 4.0);
                         let pos = body.position + Vec2::new(offset.x * body.facing, offset.y);

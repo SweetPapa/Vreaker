@@ -313,6 +313,7 @@ fn respawn_if_fallen_out_of_bounds(
             &mut CounterStance,
             &mut MeteorDiveState,
             &mut PlayerRespawnState,
+            Option<&Hitstun>,
         ),
         With<Player>,
     >,
@@ -331,6 +332,7 @@ fn respawn_if_fallen_out_of_bounds(
         mut counter,
         mut dive,
         mut respawn,
+        hitstun,
     ) in &mut players
     {
         if respawn.active {
@@ -344,10 +346,15 @@ fn respawn_if_fallen_out_of_bounds(
         {
             // Ignore walking cleanly across a bridge near the left edge of a BlastZone
             let on_entry_bridge = body.position.x < z.min.x + 12.0 && body.position.y >= 175.0;
-            if on_entry_bridge {
+            let crossed = z.crossed_edge(body.position);
+            // Authentic Smash rule: voluntary high jumps, JumpPads, or Up-B recoveries never
+            // trigger a Top Star-KO unless the player is actively launched upward in Hitstun!
+            let safe_voluntary_top =
+                crossed == BlastEdge::Top && !hitstun.is_some_and(Hitstun::is_active);
+            if on_entry_bridge || safe_voluntary_top {
                 None
             } else {
-                Some(z.crossed_edge(body.position))
+                Some(crossed)
             }
         } else if body.position.y < ZONE_A_KILL_Y {
             Some(BlastEdge::Bottom)

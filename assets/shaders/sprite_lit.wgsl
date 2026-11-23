@@ -67,7 +67,9 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     ));
 
     let albedo = diffuse.rgb * material.tint.rgb;
-    let ambient_rgb = albedo * material.ambient.rgb * material.ambient.a;
+    // Balanced hemisphere ambient fill keeps silhouettes readable without over-brightening sprites.
+    let hemi = mix(0.90, 1.10, clamp(world_n.y * 0.5 + 0.5, 0.0, 1.0));
+    let ambient_rgb = albedo * material.ambient.rgb * material.ambient.a * hemi;
 
     var lit_rgb = vec3<f32>(0.0);
     let light_count = min(u32(max(material.transform_params.w, 0.0)), 16u);
@@ -109,9 +111,15 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    // Cap diffuse+ambient below HDR bloom threshold so Bloom is driven strictly by emission
-    // (and hit flashes), keeping pixel-art armor silhouettes razor sharp.
-    let shaded_rgb = min(ambient_rgb + lit_rgb, vec3<f32>(0.98));
+    // Subtle cool-silver Fresnel edge rim-light separating character & weapon silhouettes cleanly
+    // from dark industrial backgrounds without washing out shadows or HDR emissive accents.
+    let edge = 1.0 - clamp(world_n.z, 0.0, 1.0);
+    let rim = edge * edge * (0.06 + rim_spec * 0.14);
+    let rim_rgb = mix(albedo, vec3<f32>(0.46, 0.62, 0.78), 0.38) * rim;
+
+    // Attenuate stacked point lights gently & cap diffuse below 0.78 so sprites stay rich and grounded
+    // while HDR emission (sabers, visors, furnace cores) pops crisply via Bloom.
+    let shaded_rgb = min(ambient_rgb + lit_rgb * 0.68 + rim_rgb, vec3<f32>(0.78));
 
     let emissive_rgb = emission_sample * material.fx_params.x;
 

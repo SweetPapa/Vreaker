@@ -377,6 +377,7 @@ impl CounterStance {
 #[derive(Component, Debug, Clone, Default)]
 pub struct MeteorDiveState {
     pub active: bool,
+    pub elapsed: f32,
 }
 
 /// Tall sweeping plasma crescent wave launched by Neutral-B (`Breaker Crescent Wave`).
@@ -1358,6 +1359,7 @@ fn handle_player_shield_and_air_dodge(
                 shield.broken_timer = 1.6;
                 shield.health = 25.0;
                 commands.entity(entity).insert(Hitstun::new(0.85));
+                callout.trigger("SHIELD BREAK! STUNNED!", true);
             }
         } else {
             shield.active = false;
@@ -1524,6 +1526,13 @@ fn handle_player_melee_and_special(
             }
         }
 
+        if hitstun.is_some_and(Hitstun::is_active)
+            && let Some(ref mut d) = maybe_dive
+        {
+            d.active = false;
+            d.elapsed = 0.0;
+        }
+
         let counter_active = maybe_counter.as_ref().is_some_and(|c| c.is_active());
         let dive_active = maybe_dive.as_ref().is_some_and(|d| d.active);
         let stunned_or_busy = hitstun.is_some_and(Hitstun::is_active)
@@ -1666,6 +1675,7 @@ fn handle_player_melee_and_special(
                     let spec = resolve_move_spec(AttackKind::DownSpecialDive, &frame_data);
                     if let Some(ref mut d) = maybe_dive {
                         d.active = true;
+                        d.elapsed = 0.0;
                     }
                     body.velocity = Vec2::new(body.velocity.x * 0.20, -560.0);
                     body.ground_speed = 0.0;
@@ -2354,25 +2364,39 @@ fn execute_melee_attack(
     }
 }
 
-/// Detects when an airborne `Down-B` Meteor Breaker Dive slams onto the ground/platform,
-/// detonating a wide dual-sided ground shockwave that launches nearby enemies upward!
+/// Detects when an airborne `Down-B` Meteor Breaker Dive slams onto the ground/platform
+/// (detonating a dual-sided ground shockwave) OR cancels cleanly if interrupted mid-dive by a
+/// `JumpPad` launch, upward bounce, wall-slide, hitstun, or safety timeout so Levy can NEVER lock up!
 #[allow(clippy::type_complexity)]
 fn resolve_meteor_dive_impacts(
     mut commands: Commands,
+    fixed_time: Res<Time<Fixed>>,
+    active_attached: Query<(Entity, &Hitbox), With<AttachedHitbox>>,
     mut divers: Query<
-        (Entity, &Team, &KinematicBody, &mut MeteorDiveState, &mut AttackState),
+        (
+            Entity,
+            &Team,
+            &KinematicBody,
+            &mut MeteorDiveState,
+            &mut AttackState,
+            Option<&Hitstun>,
+        ),
         With<Player>,
     >,
     mut vis_events: MessageWriter<CombatVisualEvent>,
 ) {
-    for (entity, team, body, mut dive, mut attack) in &mut divers {
+    let dt = fixed_time.delta_secs();
+    for (entity, team, body, mut dive, mut attack, hitstun) in &mut divers {
         if !dive.active {
             continue;
         }
+        dive.elapsed += dt;
         if body.state == MovementState::Grounded {
             dive.active = false;
+            dive.elapsed = 0.0;
             attack.active_move = None;
             attack.active_timer = 0.0;
+            despawn_owner_attached_hitboxes(&mut commands, entity, &active_attached);
             let slam_pos = Vec2::new(body.position.x, body.feet_y() + 8.0);
             commands.spawn((
                 Name::new("MeteorSlamShockwave"),
@@ -2404,6 +2428,27 @@ fn resolve_meteor_dive_impacts(
                 max_radius: 62.0,
                 color_rgb: [4.8, 2.4, 0.45],
             });
+        } else if body.velocity.y > -40.0
+            || matches!(
+                body.state,
+                MovementState::WallSliding { .. } | MovementState::LoopLocked { .. }
+            )
+            || hitstun.is_some_and(Hitstun::is_active)
+            || dive.elapsed >= 0.95
+        {
+            // Launched upward by a JumpPad, deflected mid-air, wall-clung, stunned, or fell into chasm:
+            // immediately exit MeteorDiveState so full horizontal air control & combat return on frame 0!
+            dive.active = false;
+            dive.elapsed = 0.0;
+            if attack.active_move == Some(AttackKind::DownSpecialDive) {
+                attack.active_move = None;
+                attack.active_timer = 0.0;
+                despawn_owner_attached_hitboxes(&mut commands, entity, &active_attached);
+            }
+            if body.velocity.y > 100.0 {
+                attack.up_special_used = false;
+                attack.side_special_used = false;
+            }
         }
     }
 }

@@ -4237,4 +4237,345 @@ SpriteSheetManifest(
             );
         }
     }
+
+    #[test]
+    fn test_enemy_never_walks_off_narrow_platform_and_foundry_textures_exist() {
+        use std::path::Path;
+        use crate::enemies::{EnemyArchetype, spawn_enemy_fighter};
+        use crate::physics::{KinematicBody, MovementState, OneWayPlatform};
+
+        // 1. Verify enemy AI stops cleanly on a narrow 100px platform during BOTH Patrol and Chase!
+        //    (Platform spans x = 150..250, top y = 100; player waits far right at x = 420 across the chasm!)
+        let (mut app, player) = physics_test_app(Vec2::new(420.0, 118.0));
+        app.world_mut()
+            .spawn(OneWayPlatform::new(Vec2::new(200.0, 96.0), 100.0, 8.0));
+        app.world_mut()
+            .spawn(OneWayPlatform::new(Vec2::new(420.0, 96.0), 100.0, 8.0));
+
+        let drone = {
+            let mut cmds = app.world_mut().commands();
+            let id = spawn_enemy_fighter(&mut cmds, EnemyArchetype::LightStriker, Vec2::new(200.0, 120.0), false);
+            app.world_mut().flush();
+            id
+        };
+
+        // Run 120 ticks (2 full seconds) of active Chase toward player across the chasm!
+        step_fixed_ticks(&mut app, 120);
+        let eb = app.world().get::<KinematicBody>(drone).unwrap();
+        assert_eq!(
+            eb.state,
+            MovementState::Grounded,
+            "Enemy chasing across a gap must NEVER walk off its platform edge (pos={:?})",
+            eb.position
+        );
+        assert!(
+            eb.position.x >= 150.0 && eb.position.x <= 250.0,
+            "Enemy must remain safely on its 150..250 platform deck, got x={}",
+            eb.position.x
+        );
+
+        // Move player far away so enemy enters Patrol -> run 180 ticks (3 full seconds) of pacing!
+        app.world_mut().get_mut::<KinematicBody>(player).unwrap().position =
+            Vec2::new(1400.0, 118.0);
+        step_fixed_ticks(&mut app, 180);
+        let eb2 = app.world().get::<KinematicBody>(drone).unwrap();
+        assert_eq!(
+            eb2.state,
+            MovementState::Grounded,
+            "Patrolling enemy must reverse cleanly at ledges and never walk off (pos={:?})",
+            eb2.position
+        );
+        assert!(
+            eb2.position.x >= 150.0 && eb2.position.x <= 250.0,
+            "Patrolling enemy must stay on its 150..250 platform, got x={}",
+            eb2.position.x
+        );
+
+        // 2. Verify all 19 Stage 1 Iron Foundry pixel-art textures & parallax assets exist!
+        for tex in [
+            "foundry_bg_far.png",
+            "foundry_bg_mid.png",
+            "foundry_bg_near.png",
+            "foundry_tile_metal.png",
+            "foundry_tile_trim_top.png",
+            "foundry_tile_wall.png",
+            "foundry_platform_oneway.png",
+            "foundry_platform_moving.png",
+            "foundry_breakable_wall.png",
+            "foundry_boost_pad.png",
+            "foundry_jump_pad.png",
+            "foundry_spikes.png",
+            "foundry_turret.png",
+            "foundry_checkpoint.png",
+            "foundry_core.png",
+            "foundry_relic.png",
+            "foundry_heal.png",
+            "foundry_lava_strip.png",
+            "foundry_molten_cascade.png",
+            "foundry_lamp_fixture.png",
+        ] {
+            let p = Path::new("assets/textures/foundry").join(tex);
+            assert!(p.exists(), "Expected Stage 1 Foundry texture at {}", p.display());
+            assert!(
+                std::fs::metadata(&p).expect("readable").len() > 80,
+                "Stage 1 Foundry texture {} must be non-empty",
+                p.display()
+            );
+        }
+    }
+
+    #[test]
+    fn test_stage1_polish_comms_read_time_sector5_ceiling_and_top_blast_safety() {
+        use bevy::asset::{AssetPlugin, LoadState};
+        use bevy_ecs_ldtk::assets::{LdtkAssetPlugin, LdtkProject};
+        use crate::combat::Hitstun;
+        use crate::enemies::BlastZone;
+        use crate::level::ldtk_rect_to_bevy_min_max;
+        use crate::physics::KinematicBody;
+        use crate::player::PlayerRespawnState;
+        use crate::story::{StoryBeat, script_for_beat};
+
+        // 1. Keepsake pickups & comms banners give generous reading time mid-platforming!
+        for relic_beat in [
+            StoryBeat::Relic1Compass,
+            StoryBeat::Relic2Portrait,
+            StoryBeat::Relic3Locket,
+        ] {
+            for line in script_for_beat(relic_beat) {
+                assert!(
+                    line.duration_secs >= 5.5,
+                    "Keepsake dialogue {:?} must last >= 5.5s for comfortable reading, got {}",
+                    relic_beat,
+                    line.duration_secs
+                );
+            }
+        }
+        for beat in [
+            StoryBeat::Stage1Intro,
+            StoryBeat::BossVulcanusIntro,
+            StoryBeat::BossVulcanusDefeated,
+        ] {
+            for line in script_for_beat(beat) {
+                assert!(
+                    line.duration_secs >= 4.5,
+                    "Comms line in {:?} must last >= 4.5s, got {}",
+                    beat,
+                    line.duration_secs
+                );
+            }
+        }
+
+        // 2. LDtk Stage 1 BlastZone top >= 900.0 and Sector 5 upper vault ceiling leaves >= 180px above deck!
+        let mut ldtk_app = App::new();
+        ldtk_app.add_plugins((MinimalPlugins, AssetPlugin::default(), LdtkAssetPlugin));
+        ldtk_app.finish();
+        ldtk_app.cleanup();
+        let handle: Handle<LdtkProject> = ldtk_app
+            .world()
+            .resource::<AssetServer>()
+            .load("levels/demo_gym.ldtk");
+        let mut loaded = false;
+        for _ in 0..400 {
+            ldtk_app.update();
+            if matches!(
+                ldtk_app.world().resource::<AssetServer>().get_load_state(&handle),
+                Some(LoadState::Loaded)
+            ) {
+                loaded = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(loaded, "demo_gym.ldtk must load cleanly after Sector 5 headroom raise");
+
+        let project = ldtk_app
+            .world()
+            .resource::<Assets<LdtkProject>>()
+            .get(&handle)
+            .unwrap();
+        let level = project.json_data().levels.first().unwrap();
+        let mut blast_max_y: Option<f32> = None;
+        let mut sector5_ceiling_min_y: Option<f32> = None;
+        for layer in level.layer_instances.as_ref().unwrap() {
+            for ent in &layer.entity_instances {
+                let (min, max) = ldtk_rect_to_bevy_min_max(ent);
+                if ent.identifier == "BlastZone" {
+                    blast_max_y = Some(max.y);
+                } else if ent.identifier == "SolidBlock"
+                    && (min.x - 5040.0).abs() < 4.0
+                    && (max.x - 5280.0).abs() < 4.0
+                {
+                    sector5_ceiling_min_y = Some(min.y);
+                }
+            }
+        }
+        let top_y = blast_max_y.expect("BlastZone entity found");
+        assert!(
+            top_y >= 900.0,
+            "Upper BlastZone must be raised >= 900.0 for generous Sector 5/6 headroom, got {}",
+            top_y
+        );
+        let ceil_y = sector5_ceiling_min_y.expect("Sector 5 upper vault SolidBlock found");
+        assert!(
+            ceil_y >= 520.0,
+            "Sector 5 ceiling bottom must sit >= 520.0 (>= 180px above y=340 deck), got {}",
+            ceil_y
+        );
+
+        // 3. Voluntary high jump / Up-B past top BlastZone without Hitstun must NOT ring-out P1,
+        //    whereas being launched past the top while in Hitstun DOES Star-KO!
+        let (mut app, player) = physics_test_app(Vec2::new(4950.0, 500.0));
+        app.world_mut().spawn(BlastZone {
+            min: Vec2::new(-360.0, -180.0),
+            max: Vec2::new(9340.0, 960.0),
+            arena_center: Vec2::new(1420.0, 312.0),
+        });
+        app.world_mut().get_mut::<KinematicBody>(player).unwrap().position =
+            Vec2::new(4950.0, 990.0);
+        step_fixed_ticks(&mut app, 1);
+        assert!(
+            !app.world().get::<PlayerRespawnState>(player).unwrap().active,
+            "Voluntary jump / Up-B above top blast line without Hitstun must NEVER Star-KO P1!"
+        );
+
+        // Now apply active Hitstun above the top blast line -> authentic Smash Star-KO triggers!
+        app.world_mut()
+            .entity_mut(player)
+            .insert(Hitstun::new(0.40));
+        app.world_mut().get_mut::<KinematicBody>(player).unwrap().position =
+            Vec2::new(4950.0, 990.0);
+        step_fixed_ticks(&mut app, 1);
+        assert!(
+            app.world().get::<PlayerRespawnState>(player).unwrap().active,
+            "Being launched past top BlastZone in active Hitstun must still trigger Smash Star-KO!"
+        );
+    }
+
+    #[test]
+    fn test_meteor_dive_onto_jump_pad_cancels_dive_and_restores_air_control() {
+        use crate::combat::MeteorDiveState;
+        use crate::physics::{JumpPad, KinematicBody, MovementState, PlayerIntent, SolidRect};
+
+        // Repro: player performs airborne Down-B (Meteor Breaker Dive) straight onto a JumpPad.
+        // Previously, JumpPad bounced Levy upward while Airborne, leaving MeteorDiveState.active=true
+        // forever -> locking out air movement and causing an infinite up-and-down JumpPad loop!
+        let (mut app, player) = physics_test_app(Vec2::new(100.0, 90.0));
+        app.world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-200.0, -32.0), Vec2::new(400.0, 0.0)));
+        app.world_mut()
+            .spawn(JumpPad::new(Vec2::new(100.0, 5.0), Vec2::new(42.0, 10.0), 615.0));
+
+        {
+            let mut body = app.world_mut().get_mut::<KinematicBody>(player).unwrap();
+            body.state = MovementState::Airborne;
+            body.velocity = Vec2::ZERO;
+        }
+        // Trigger airborne Down-B (Meteor Breaker Dive) directly above the JumpPad
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.move_axis = Vec2::new(0.0, -1.0);
+            intent.special_just_pressed = true;
+        }
+        step_fixed_ticks(&mut app, 1);
+        assert!(
+            app.world().get::<MeteorDiveState>(player).unwrap().active,
+            "Airborne Down-B must enter MeteorDiveState"
+        );
+
+        // Release Down-B and hold Right to steer off the JumpPad once launched
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.move_axis = Vec2::new(1.0, 0.0);
+            intent.special_just_pressed = false;
+        }
+
+        // Step enough ticks to dive onto the JumpPad, get launched upward, and steer right!
+        step_fixed_ticks(&mut app, 25);
+
+        let dive = app.world().get::<MeteorDiveState>(player).unwrap();
+        let body = app.world().get::<KinematicBody>(player).unwrap();
+        assert!(
+            !dive.active,
+            "Hitting a JumpPad during MeteorDiveState must cancel dive immediately (no infinite bounce lock!)"
+        );
+        assert!(
+            body.position.x > 135.0,
+            "Player must retain full horizontal air control after JumpPad launch (got x={})",
+            body.position.x
+        );
+    }
+
+    #[test]
+    fn test_vfx_textures_energy_shader_and_all_28_sfx_assets_exist() {
+        use std::path::Path;
+
+        // 1. Custom GPU energy/plasma/shield/crescent WGSL shader exists
+        let shader = Path::new("assets/shaders/vfx_energy.wgsl");
+        assert!(shader.exists(), "Expected GPU energy shader at {}", shader.display());
+        assert!(std::fs::metadata(shader).unwrap().len() > 2000);
+
+        // 2. All 12 sculpted 32-bit pixel-art VFX textures exist & are non-empty
+        for tex in [
+            "vfx_buster_pellet.png",
+            "vfx_buster_charged.png",
+            "vfx_turret_bolt.png",
+            "vfx_arcane_orb.png",
+            "vfx_magma_wave.png",
+            "vfx_emitter_nozzle.png",
+            "vfx_respawn_platform.png",
+            "vfx_beacon_crystal.png",
+            "vfx_shadow_oval.png",
+            "vfx_smoke_puff.png",
+            "vfx_star_spark.png",
+            "vfx_p1_marker.png",
+        ] {
+            let p = Path::new("assets/textures/vfx").join(tex);
+            assert!(p.exists(), "Expected pixel-art VFX texture at {}", p.display());
+            assert!(
+                std::fs::metadata(&p).expect("readable").len() > 80,
+                "VFX texture {} must be non-empty",
+                p.display()
+            );
+        }
+
+        // 3. All 28 gameplay SFX WAV files exist on disk (zero raw 1-oscillator fallback beeps)
+        for sfx in [
+            "hit_light.wav",
+            "hit_heavy.wav",
+            "buster_pellet.wav",
+            "buster_charged.wav",
+            "ko_blast.wav",
+            "hazard_hit.wav",
+            "jump.wav",
+            "boost_pad.wav",
+            "land.wav",
+            "spin_rev.wav",
+            "shield_block.wav",
+            "air_dodge.wav",
+            "slash_light.wav",
+            "slash_heavy.wav",
+            "counter_boom.wav",
+            "ground_slam.wav",
+            "side_blitz.wav",
+            "enemy_blink.wav",
+            "boss_laser_charge.wav",
+            "cyclone_spin.wav",
+            "smash_release.wav",
+            "fast_fall.wav",
+            "arcane_erupt.wav",
+            "jump_pad.wav",
+            "checkpoint.wav",
+            "collect_core.wav",
+            "collect_relic.wav",
+            "wall_break.wav",
+        ] {
+            let p = Path::new("assets/audio/sfx").join(sfx);
+            assert!(p.exists(), "Expected layered SFX WAV at {}", p.display());
+            assert!(
+                std::fs::metadata(&p).expect("readable").len() > 2000,
+                "SFX WAV {} must contain rich audio samples",
+                p.display()
+            );
+        }
+    }
 }

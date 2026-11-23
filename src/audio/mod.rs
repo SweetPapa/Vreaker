@@ -91,6 +91,24 @@ fn load_or_synthesize(
     }
 }
 
+fn load_or_synthesize_rising(
+    rel_path: &str,
+    asset_server: &AssetServer,
+    audio_assets: &mut Assets<AudioSource>,
+    freq_start: f32,
+    freq_end: f32,
+    duration_secs: f32,
+) -> Handle<AudioSource> {
+    if Path::new("assets").join(rel_path).exists() {
+        asset_server.load(rel_path.to_string())
+    } else {
+        let bytes = synthesize_rising_charge_wav(freq_start, freq_end, duration_secs);
+        audio_assets.add(AudioSource {
+            bytes: bytes.into(),
+        })
+    }
+}
+
 fn load_sfx_with_procedural_fallback(
     asset_server: Res<AssetServer>,
     mut audio_assets: ResMut<Assets<AudioSource>>,
@@ -168,66 +186,181 @@ fn load_sfx_with_procedural_fallback(
         0.22,
         false,
     ));
-    sfx.land = Some(audio_assets.add(AudioSource {
-        bytes: synthesize_pcm_wav(135.0, 62.0, 0.06, false).into(),
-    }));
-    sfx.spin_rev = Some(audio_assets.add(AudioSource {
-        bytes: synthesize_pcm_wav(220.0, 560.0, 0.08, true).into(),
-    }));
-    sfx.shield_block = Some(audio_assets.add(AudioSource {
-        bytes: synthesize_pcm_wav(940.0, 520.0, 0.11, false).into(),
-    }));
-    sfx.air_dodge = Some(audio_assets.add(AudioSource {
-        bytes: synthesize_pcm_wav(680.0, 290.0, 0.10, false).into(),
-    }));
-    sfx.slash_light = Some(audio_assets.add(AudioSource {
-        bytes: synthesize_pcm_wav(520.0, 210.0, 0.065, false).into(),
-    }));
-    sfx.slash_heavy = Some(audio_assets.add(AudioSource {
-        bytes: synthesize_pcm_wav(360.0, 115.0, 0.13, true).into(),
-    }));
-    sfx.counter_boom = Some(audio_assets.add(AudioSource {
-        bytes: synthesize_pcm_wav(1040.0, 180.0, 0.24, true).into(),
-    }));
-    sfx.ground_slam = Some(audio_assets.add(AudioSource {
-        bytes: synthesize_pcm_wav(165.0, 48.0, 0.22, true).into(),
-    }));
-    sfx.side_blitz = Some(audio_assets.add(AudioSource {
-        bytes: synthesize_pcm_wav(440.0, 980.0, 0.14, true).into(),
-    }));
-    sfx.enemy_blink = Some(audio_assets.add(AudioSource {
-        bytes: synthesize_pcm_wav(880.0, 340.0, 0.12, false).into(),
-    }));
-    sfx.boss_laser_charge = Some(audio_assets.add(AudioSource {
-        bytes: synthesize_rising_charge_wav(240.0, 1280.0, 0.42).into(),
-    }));
-    sfx.cyclone_spin = Some(audio_assets.add(AudioSource {
-        bytes: synthesize_rising_charge_wav(320.0, 880.0, 0.24).into(),
-    }));
-    sfx.smash_release = Some(audio_assets.add(AudioSource {
-        bytes: synthesize_pcm_wav(640.0, 130.0, 0.20, true).into(),
-    }));
-    sfx.fast_fall = Some(audio_assets.add(AudioSource {
-        bytes: synthesize_pcm_wav(820.0, 380.0, 0.06, false).into(),
-    }));
-    sfx.arcane_erupt = Some(audio_assets.add(AudioSource {
-        bytes: synthesize_pcm_wav(280.0, 960.0, 0.22, true).into(),
-    }));
-    sfx.jump_pad = Some(audio_assets.add(AudioSource {
-        bytes: synthesize_rising_charge_wav(220.0, 960.0, 0.18).into(),
-    }));
-    sfx.checkpoint = Some(audio_assets.add(AudioSource {
-        bytes: synthesize_rising_charge_wav(440.0, 1180.0, 0.28).into(),
-    }));
-    sfx.collect_core = Some(audio_assets.add(AudioSource {
-        bytes: synthesize_pcm_wav(740.0, 1240.0, 0.08, false).into(),
-    }));
-    sfx.collect_relic = Some(audio_assets.add(AudioSource {
-        bytes: synthesize_rising_charge_wav(520.0, 1560.0, 0.36).into(),
-    }));
-    sfx.wall_break = Some(audio_assets.add(AudioSource {
-        bytes: synthesize_pcm_wav(180.0, 42.0, 0.26, true).into(),
-    }));
+    sfx.land = Some(load_or_synthesize(
+        "audio/sfx/land.wav",
+        &asset_server,
+        &mut audio_assets,
+        135.0,
+        62.0,
+        0.06,
+        false,
+    ));
+    sfx.spin_rev = Some(load_or_synthesize(
+        "audio/sfx/spin_rev.wav",
+        &asset_server,
+        &mut audio_assets,
+        220.0,
+        560.0,
+        0.08,
+        true,
+    ));
+    sfx.shield_block = Some(load_or_synthesize(
+        "audio/sfx/shield_block.wav",
+        &asset_server,
+        &mut audio_assets,
+        940.0,
+        520.0,
+        0.11,
+        false,
+    ));
+    sfx.air_dodge = Some(load_or_synthesize(
+        "audio/sfx/air_dodge.wav",
+        &asset_server,
+        &mut audio_assets,
+        680.0,
+        290.0,
+        0.10,
+        false,
+    ));
+    sfx.slash_light = Some(load_or_synthesize(
+        "audio/sfx/slash_light.wav",
+        &asset_server,
+        &mut audio_assets,
+        520.0,
+        210.0,
+        0.065,
+        false,
+    ));
+    sfx.slash_heavy = Some(load_or_synthesize(
+        "audio/sfx/slash_heavy.wav",
+        &asset_server,
+        &mut audio_assets,
+        360.0,
+        115.0,
+        0.13,
+        true,
+    ));
+    sfx.counter_boom = Some(load_or_synthesize(
+        "audio/sfx/counter_boom.wav",
+        &asset_server,
+        &mut audio_assets,
+        1040.0,
+        180.0,
+        0.24,
+        true,
+    ));
+    sfx.ground_slam = Some(load_or_synthesize(
+        "audio/sfx/ground_slam.wav",
+        &asset_server,
+        &mut audio_assets,
+        165.0,
+        48.0,
+        0.22,
+        true,
+    ));
+    sfx.side_blitz = Some(load_or_synthesize(
+        "audio/sfx/side_blitz.wav",
+        &asset_server,
+        &mut audio_assets,
+        440.0,
+        980.0,
+        0.14,
+        true,
+    ));
+    sfx.enemy_blink = Some(load_or_synthesize(
+        "audio/sfx/enemy_blink.wav",
+        &asset_server,
+        &mut audio_assets,
+        880.0,
+        340.0,
+        0.12,
+        false,
+    ));
+    sfx.boss_laser_charge = Some(load_or_synthesize_rising(
+        "audio/sfx/boss_laser_charge.wav",
+        &asset_server,
+        &mut audio_assets,
+        240.0,
+        1280.0,
+        0.42,
+    ));
+    sfx.cyclone_spin = Some(load_or_synthesize_rising(
+        "audio/sfx/cyclone_spin.wav",
+        &asset_server,
+        &mut audio_assets,
+        320.0,
+        880.0,
+        0.24,
+    ));
+    sfx.smash_release = Some(load_or_synthesize(
+        "audio/sfx/smash_release.wav",
+        &asset_server,
+        &mut audio_assets,
+        640.0,
+        130.0,
+        0.20,
+        true,
+    ));
+    sfx.fast_fall = Some(load_or_synthesize(
+        "audio/sfx/fast_fall.wav",
+        &asset_server,
+        &mut audio_assets,
+        820.0,
+        380.0,
+        0.06,
+        false,
+    ));
+    sfx.arcane_erupt = Some(load_or_synthesize(
+        "audio/sfx/arcane_erupt.wav",
+        &asset_server,
+        &mut audio_assets,
+        280.0,
+        960.0,
+        0.22,
+        true,
+    ));
+    sfx.jump_pad = Some(load_or_synthesize_rising(
+        "audio/sfx/jump_pad.wav",
+        &asset_server,
+        &mut audio_assets,
+        220.0,
+        960.0,
+        0.18,
+    ));
+    sfx.checkpoint = Some(load_or_synthesize_rising(
+        "audio/sfx/checkpoint.wav",
+        &asset_server,
+        &mut audio_assets,
+        440.0,
+        1180.0,
+        0.28,
+    ));
+    sfx.collect_core = Some(load_or_synthesize(
+        "audio/sfx/collect_core.wav",
+        &asset_server,
+        &mut audio_assets,
+        740.0,
+        1240.0,
+        0.08,
+        false,
+    ));
+    sfx.collect_relic = Some(load_or_synthesize_rising(
+        "audio/sfx/collect_relic.wav",
+        &asset_server,
+        &mut audio_assets,
+        520.0,
+        1560.0,
+        0.36,
+    ));
+    sfx.wall_break = Some(load_or_synthesize(
+        "audio/sfx/wall_break.wav",
+        &asset_server,
+        &mut audio_assets,
+        180.0,
+        42.0,
+        0.26,
+        true,
+    ));
 }
 
 fn play_sfx(commands: &mut Commands, handle: &Option<Handle<AudioSource>>, volume: f32) {

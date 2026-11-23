@@ -85,61 +85,61 @@ pub fn script_for_beat(beat: StoryBeat) -> &'static [DialogueLine] {
             DialogueLine {
                 speaker: SpeakerId::Mina,
                 text: "Signal's spiking dead ahead, Levy—that's the Forge Diamond deep inside the Directorate's Foundry Citadel.",
-                duration_secs: 4.4,
+                duration_secs: 5.5,
             },
             DialogueLine {
                 speaker: SpeakerId::Barnaby,
                 text: "Historical note: 2085 automated smelters burn at 3,200 degrees—rather like a 1700s blacksmith's hearth, only far more lethal!",
-                duration_secs: 4.4,
+                duration_secs: 5.8,
             },
             DialogueLine {
                 speaker: SpeakerId::Levy,
                 text: "Save the history lesson, Barnaby. Four stones stand between me and my family. Let's take the first one.",
-                duration_secs: 4.0,
+                duration_secs: 5.2,
             },
         ],
         StoryBeat::Relic1Compass => &[DialogueLine {
             speaker: SpeakerId::Levy,
             text: "My old brass pocket compass... pulled clean through the rift with me. Needle still points home.",
-            duration_secs: 4.0,
+            duration_secs: 6.4,
         }],
         StoryBeat::Relic2Portrait => &[DialogueLine {
             speaker: SpeakerId::Levy,
             text: "Sarah and the kids... torn half in two, but I'm not leaving a piece of them in this iron maze.",
-            duration_secs: 4.2,
+            duration_secs: 6.4,
         }],
         StoryBeat::Relic3Locket => &[DialogueLine {
             speaker: SpeakerId::Levy,
             text: "Her silver locket! Hold tight, Sarah—I'm ripping my way back to the 1700s.",
-            duration_secs: 4.0,
+            duration_secs: 6.0,
         }],
         // Verbatim Pre-Boss Dialogue from `docs/story-bible.md` Section 7
         StoryBeat::BossVulcanusIntro => &[
             DialogueLine {
                 speaker: SpeakerId::Vulcanus,
                 text: "UNREGISTERED ORGANIC DETECTED IN SECTOR 8. SURRENDER THE RIFT ANOMALY FOR RECLAMATION.",
-                duration_secs: 3.8,
+                duration_secs: 5.0,
             },
             DialogueLine {
                 speaker: SpeakerId::Levy,
                 text: "I don't know what half those words mean, tin man. That glowing stone in your furnace—hand it over, and I'll be out of your hair.",
-                duration_secs: 4.4,
+                duration_secs: 5.6,
             },
             DialogueLine {
                 speaker: SpeakerId::Vulcanus,
                 text: "THERMAL OUTPUT: 400%. TERMINATING INTRUDER.",
-                duration_secs: 3.0,
+                duration_secs: 4.5,
             },
             DialogueLine {
                 speaker: SpeakerId::Levy,
                 text: "...Right. Guess we're doing this the hard way.",
-                duration_secs: 2.8,
+                duration_secs: 4.5,
             },
         ],
         StoryBeat::BossVulcanusDefeated => &[DialogueLine {
             speaker: SpeakerId::Mina,
             text: "Forge Diamond secured! One down, three to go—next signal is freezing cold out in the Cryo Conduit.",
-            duration_secs: 4.5,
+            duration_secs: 6.0,
         }],
     }
 }

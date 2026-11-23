@@ -88,9 +88,9 @@ impl Default for SpriteLitUniform {
     fn default() -> Self {
         Self {
             atlas_rect: Vec4::new(0.0, 0.0, 1.0, 1.0),
-            ambient: Vec4::new(0.24, 0.30, 0.42, 0.36),
+            ambient: Vec4::new(0.30, 0.35, 0.44, 0.38),
             transform_params: Vec4::new(1.0, 1.0, 0.0, 0.0),
-            fx_params: Vec4::new(3.6, 0.0, 4.0, 0.28),
+            fx_params: Vec4::new(3.6, 0.0, 4.0, 0.22),
             tint: Vec4::ONE,
             lights: [PointLight2dUniform::default(); MAX_POINT_LIGHTS_2D],
         }

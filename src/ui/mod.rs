@@ -10,12 +10,14 @@ use bevy::prelude::*;
 use bevy::text::FontSize;
 use bevy::ui::Pressed;
 use bevy::ui_widgets::{Activate, Button as UiButton};
+use bevy::window::PrimaryWindow;
 use leafwing_input_manager::prelude::ActionState;
 
 use crate::audio::AudioSettings;
 use crate::combat::{
-    BusterState, ComboTracker, CounterStance, DamagePercent, GroundDodgeState, LastHitTelemetry,
-    LastMoveCallout, MeteorDiveState, ShieldState, SmashChargeState, StageRunTimer,
+    BusterState, ComboTracker, CounterStance, DamagePercent, GroundDodgeState, Hitstun,
+    LastHitTelemetry, LastMoveCallout, MeteorDiveState, ShieldState, SmashChargeState,
+    StageRunTimer,
 };
 use crate::enemies::{
     ArenaScore, BlastZoneKoEvent, BossState, EncounterStatus, EnemyHealth,
@@ -26,7 +28,9 @@ use crate::input::{
 };
 use crate::physics::{KinematicBody, MovementState, PlayerIntent};
 use crate::player::{Player, PlayerSpriteVisual};
-use crate::rendering::SpriteSheetAnimator;
+use crate::rendering::{
+    PixelWorldCamera, SpriteSheetAnimator, VIRTUAL_HEIGHT, VIRTUAL_WIDTH, compute_integer_viewport,
+};
 use crate::state::{AppState, GameStateCommand, StateTransitionSet};
 use crate::story::{STAGE1_RELIC_NAMES, SpeakerId, StoryCommsState};
 
@@ -137,6 +141,10 @@ struct SmashChargeLabel;
 /// Live arcade move-name callout text above the P1 Smash % card.
 #[derive(Component)]
 struct MoveCalloutText;
+
+/// Floating crisp overhead `STUNNED!` badge tracked right above Levy's head during Hitstun.
+#[derive(Component)]
+struct PlayerStunTag;
 
 /// Full-screen Smash Moveset & Live Gamepad Button Inspector overlay (`F1` / menu button).
 #[derive(Component)]
@@ -273,6 +281,7 @@ impl Plugin for GameUiPlugin {
                     update_input_readout_hud,
                     update_smash_percent_hud,
                     update_move_callout_hud,
+                    update_player_stun_tag_hud,
                     update_zone_and_ko_banner,
                     update_encounter_and_boss_hud,
                     update_combo_and_run_timer_hud,
@@ -575,6 +584,34 @@ fn spawn_playing_hud(
             },
         ))
         .with_children(|hud| {
+            // Crisp screen-tracked overhead `STUNNED!` pill badge positioned directly above Levy
+            hud.spawn((
+                PlayerStunTag,
+                Node {
+                    display: Display::None,
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(0.0),
+                    top: Val::Px(0.0),
+                    padding: UiRect::axes(Val::Px(8.0), Val::Px(2.0)),
+                    border: UiRect::all(Val::Px(2.0)),
+                    border_radius: BorderRadius::all(Val::Px(4.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.14, 0.09, 0.02, 0.94)),
+                BorderColor::all(Color::srgb(1.0, 0.88, 0.16)),
+                ZIndex(40),
+            ))
+            .with_children(|tag| {
+                tag.spawn((
+                    Text::new("STUNNED!"),
+                    TextFont {
+                        font_size: FontSize::Px(13.0),
+                        ..default()
+                    },
+                    TextColor(Color::srgb(1.0, 0.95, 0.30)),
+                ));
+            });
+
             // Top bar
             hud.spawn(Node {
                 width: Val::Percent(100.0),
@@ -604,7 +641,7 @@ fn spawn_playing_hud(
                     .with_children(|badge| {
                         badge.spawn((
                             ZoneHeaderText,
-                            Text::new("THE FOUNDRY GYM  •  ZONE A: SONIC RUNWAY   |   KOs: 0"),
+                            Text::new("IRON FOUNDRY  •  SECTOR 1: OUTER DECK  |  KOs: 0"),
                             TextFont {
                                 font_size: FontSize::Px(13.0),
                                 ..default()
@@ -1984,13 +2021,24 @@ fn update_moveset_guide_overlay(
 }
 
 fn update_move_callout_hud(
+    time: Res<Time>,
     callout: Res<LastMoveCallout>,
+    players: Query<Option<&Hitstun>, With<Player>>,
     mut labels: Query<(&mut Text, &mut TextColor), With<MoveCalloutText>>,
 ) {
     let Ok((mut text, mut color)) = labels.single_mut() else {
         return;
     };
-    if callout.timer > 0.0 && !callout.label.is_empty() {
+    let stunned = players
+        .single()
+        .ok()
+        .flatten()
+        .is_some_and(Hitstun::is_active);
+    if stunned {
+        let pulse = 0.5 + 0.5 * (time.elapsed_secs() * 28.0).sin();
+        **text = "STUNNED!".to_string();
+        *color = TextColor(Color::srgb(1.0, 0.78 + 0.22 * pulse, 0.18 + 0.45 * pulse));
+    } else if callout.timer > 0.0 && !callout.label.is_empty() {
         **text = callout.label.clone();
         *color = TextColor(if callout.is_heavy {
             COLOR_ACCENT_AMBER
@@ -2000,6 +2048,56 @@ fn update_move_callout_hud(
     } else {
         **text = String::new();
     }
+}
+
+/// Projects Levy's world position onto the upscaled viewport to anchor a razor-sharp
+/// flashing `STUNNED!` tag directly over his head whenever Hitstun or Shield Break is active.
+#[allow(clippy::type_complexity)]
+fn update_player_stun_tag_hud(
+    time: Res<Time>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    cameras: Query<&Transform, With<PixelWorldCamera>>,
+    players: Query<(&KinematicBody, Option<&Hitstun>), With<Player>>,
+    mut tags: Query<(&mut Node, &mut BorderColor), With<PlayerStunTag>>,
+) {
+    let Ok((mut node, mut border)) = tags.single_mut() else {
+        return;
+    };
+    let Ok((body, hitstun)) = players.single() else {
+        node.display = Display::None;
+        return;
+    };
+    if !hitstun.is_some_and(Hitstun::is_active) {
+        node.display = Display::None;
+        return;
+    }
+    let Ok(win) = windows.single() else {
+        node.display = Display::None;
+        return;
+    };
+    let Ok(cam_tf) = cameras.single() else {
+        node.display = Display::None;
+        return;
+    };
+
+    let win_w = win.width().max(1.0);
+    let win_h = win.height().max(1.0);
+    let vp = compute_integer_viewport(win_w, win_h, VIRTUAL_WIDTH, VIRTUAL_HEIGHT);
+    let scale = vp.scale as f32;
+    let offset_x = (win_w - vp.display_width as f32) * 0.5;
+    let offset_y = (win_h - vp.display_height as f32) * 0.5;
+
+    let head_world = body.position + Vec2::new(0.0, 56.0);
+    let rel = head_world - cam_tf.translation.truncate();
+    let sx = offset_x + (VIRTUAL_WIDTH as f32 * 0.5 + rel.x) * scale;
+    let sy = offset_y + (VIRTUAL_HEIGHT as f32 * 0.5 - rel.y) * scale;
+
+    let tag_half_w = 46.0;
+    let pulse = 0.5 + 0.5 * (time.elapsed_secs() * 32.0).sin();
+    node.display = Display::Flex;
+    node.left = Val::Px((sx - tag_half_w).clamp(12.0, (win_w - 104.0).max(12.0)));
+    node.top = Val::Px((sy - 14.0).clamp(12.0, (win_h - 40.0).max(12.0)));
+    *border = BorderColor::all(Color::srgb(1.0, 0.72 + 0.28 * pulse, 0.14 + 0.65 * pulse));
 }
 
 #[allow(clippy::type_complexity)]
@@ -2153,7 +2251,7 @@ fn update_zone_and_ko_banner(
         .single()
         .map(|b| {
             if b.position.x >= 8520.0 {
-                "SECTOR 8: VULCANUS SANCTUM (BOSS)"
+                "FINAL SANCTUM: IRON TITAN VULCANUS"
             } else if b.position.x >= 7440.0 {
                 "SECTOR 8: CITADEL APPROACH"
             } else if b.position.x >= 6780.0 {
@@ -2176,7 +2274,7 @@ fn update_zone_and_ko_banner(
 
     if let Ok(mut header) = header_labels.single_mut() {
         **header = format!(
-            "FOUNDRY CITADEL  •  {}  |  KOs: {}  |  CORES: {}/{}  |  RELICS: {}/{}",
+            "IRON FOUNDRY  •  {}  |  KOs: {}  |  CORES: {}/{}  |  RELICS: {}/{}",
             zone_name,
             score.ko_count,
             score.cores_collected,

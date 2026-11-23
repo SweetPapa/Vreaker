@@ -24,7 +24,7 @@ use crate::player::PlayerSpawnPoint;
 use crate::state::StageRestartEvent;
 
 /// LDtk level pixel height & world-origin alignment matching `assets/levels/demo_gym.ldtk`.
-pub const LDTK_LEVEL_HEIGHT: f32 = 960.0;
+pub const LDTK_LEVEL_HEIGHT: f32 = 1240.0;
 pub const LDTK_ORIGIN_X: f32 = -360.0;
 pub const LDTK_ORIGIN_Y: f32 = -260.0;
 

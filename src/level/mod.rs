@@ -1,8 +1,9 @@
-//! LDtk level loading (`assets/levels/demo_gym.ldtk`) via `bevy_ecs_ldtk` with
-//! full entity hydration (solids, slopes, boost pads, spring launchers, drop-throughs,
-//! moving platforms, spike hazards, timed magma vents, checkpoint beacons, collectibles,
-//! breakable bulkheads, wall turrets, progression enemies, Lockdown Ambush Arenas,
-//! End Boss, and Blast Zones) plus clean stage restart handling.
+//! LDtk multi-stage level loading (`assets/levels/demo_gym.ldtk` & `assets/levels/cryo_conduit.ldtk`)
+//! via `bevy_ecs_ldtk` with full entity hydration (solids, low-friction Mirror-Ice decks & slopes,
+//! boost pads, spring launchers, drop-throughs, moving platforms, spike hazards, timed magma/cryo
+//! vents, checkpoint beacons, collectibles, breakable bulkheads, wall turrets, progression enemies,
+//! Lockdown Ambush Arenas, End Bosses Vulcanus & Borealis, and Blast Zones) plus clean stage
+//! restart and Stage 1 <-> Stage 2 hot-swapping!
 
 use bevy::prelude::*;
 use bevy_ecs_ldtk::prelude::*;
@@ -16,17 +17,21 @@ use crate::enemies::{
     spawn_breakable_wall, spawn_stage_enemy, spawn_wall_turret,
 };
 use crate::physics::{
-    BoostPad, BreakableWall, CheckpointBeacon, CollectibleItem, CollectibleKind, JumpPad,
-    LoopSpline, MovingPlatform, OneWayPlatform, SlopeSegment, SolidRect, SpikeHazard,
+    BoostPad, BreakableWall, CheckpointBeacon, CollectibleItem, CollectibleKind, IceSurface,
+    JumpPad, LoopSpline, MovingPlatform, OneWayPlatform, SlopeSegment, SolidRect, SpikeHazard,
     TimedHazardBeam,
 };
 use crate::player::PlayerSpawnPoint;
-use crate::state::StageRestartEvent;
+use crate::state::{CampaignState, StageId, StageRestartEvent, StageSwitchEvent, StageWorldEntity};
 
-/// LDtk level pixel height & world-origin alignment matching `assets/levels/demo_gym.ldtk`.
+/// LDtk level pixel height & world-origin alignment matching both `demo_gym.ldtk` and `cryo_conduit.ldtk`.
 pub const LDTK_LEVEL_HEIGHT: f32 = 1240.0;
 pub const LDTK_ORIGIN_X: f32 = -360.0;
 pub const LDTK_ORIGIN_Y: f32 = -260.0;
+
+/// Marker identifying the active root [`LdtkWorldBundle`] entity so stage switching replaces it cleanly.
+#[derive(Component, Debug, Default)]
+pub struct ActiveLdtkWorldRoot;
 
 /// Authoritative list of respawnable dynamic spawns parsed from the active LDtk level.
 #[derive(Resource, Debug, Default, Clone)]
@@ -38,8 +43,12 @@ pub struct StageDynamicSpawns {
     pub breakable_walls: Vec<(Vec2, Vec2, f32)>,
 }
 
-/// Plugin wiring `bevy_ecs_ldtk` level loading (`assets/levels/demo_gym.ldtk`),
-/// hot-reload entity hydration, and clean stage restart.
+/// Tracks which [`StageId`] is currently spawned into the ECS world.
+#[derive(Resource, Debug, Default)]
+struct LoadedLdtkStage(Option<StageId>);
+
+/// Plugin wiring `bevy_ecs_ldtk` multi-stage level loading, hot-reload entity hydration,
+/// stage switching (`Stage 1 <-> Stage 2`), and clean stage restart.
 pub struct LevelPlugin;
 
 impl Plugin for LevelPlugin {
@@ -51,20 +60,108 @@ impl Plugin for LevelPlugin {
                 ..default()
             })
             .init_resource::<StageDynamicSpawns>()
-            .add_systems(Startup, spawn_demo_gym_ldtk_world)
-            .add_systems(Update, (hydrate_ldtk_entities, handle_stage_restart));
+            .init_resource::<LoadedLdtkStage>()
+            .add_systems(Startup, spawn_initial_ldtk_world)
+            .add_systems(
+                Update,
+                (
+                    handle_stage_switch,
+                    hydrate_ldtk_entities,
+                    handle_stage_restart,
+                )
+                    .chain(),
+            );
     }
 }
 
-fn spawn_demo_gym_ldtk_world(mut commands: Commands, asset_server: Res<AssetServer>) {
-    let ldtk_handle = asset_server.load("levels/demo_gym.ldtk").into();
+fn spawn_stage_ldtk_world(commands: &mut Commands, asset_server: &AssetServer, stage: StageId) {
+    let ldtk_handle = asset_server.load(stage.ldtk_asset_path()).into();
     commands.spawn((
-        Name::new("FoundryCitadelLdtkWorld"),
+        Name::new(format!("LdtkWorld_{stage:?}")),
+        ActiveLdtkWorldRoot,
         LdtkWorldBundle {
             ldtk_handle,
             ..default()
         },
     ));
+}
+
+fn spawn_initial_ldtk_world(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    campaign: Res<CampaignState>,
+    mut loaded: ResMut<LoadedLdtkStage>,
+) {
+    spawn_stage_ldtk_world(&mut commands, &asset_server, campaign.active_stage);
+    loaded.0 = Some(campaign.active_stage);
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn handle_stage_switch(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut switches: MessageReader<StageSwitchEvent>,
+    mut loaded: ResMut<LoadedLdtkStage>,
+    mut dynamic_spawns: ResMut<StageDynamicSpawns>,
+    mut telemetry: ResMut<LastHitTelemetry>,
+    mut score: ResMut<ArenaScore>,
+    mut spawn_point: ResMut<PlayerSpawnPoint>,
+    ldtk_roots: Query<Entity, With<ActiveLdtkWorldRoot>>,
+    cleanup_q: Query<
+        Entity,
+        Or<(
+            Or<(
+                With<StageWorldEntity>,
+                With<SolidRect>,
+                With<SlopeSegment>,
+                With<OneWayPlatform>,
+                With<MovingPlatform>,
+                With<BoostPad>,
+                With<JumpPad>,
+                With<CheckpointBeacon>,
+                With<LoopSpline>,
+                With<SpikeHazard>,
+                With<TimedHazardBeam>,
+                With<BlastZone>,
+            )>,
+            Or<(
+                With<EnemyFighter>,
+                With<PendingEnemyRespawn>,
+                With<PendingArcanePillar>,
+                With<WallTurret>,
+                With<TurretProjectile>,
+                With<BusterProjectile>,
+                With<BreakerWaveProjectile>,
+                With<Hitbox>,
+                With<LockdownGate>,
+                With<LockdownEncounter>,
+                With<CollectibleItem>,
+                With<BreakableWall>,
+            )>,
+        )>,
+    >,
+) {
+    let Some(target_stage) = switches.read().last().map(|ev| ev.0) else {
+        return;
+    };
+    if loaded.0 == Some(target_stage) {
+        return;
+    }
+
+    for root in &ldtk_roots {
+        commands.entity(root).despawn();
+    }
+    for e in &cleanup_q {
+        commands.entity(e).despawn();
+    }
+
+    *dynamic_spawns = StageDynamicSpawns::default();
+    *telemetry = LastHitTelemetry::default();
+    *score = ArenaScore::default();
+    *spawn_point = PlayerSpawnPoint::default();
+
+    spawn_stage_ldtk_world(&mut commands, &asset_server, target_stage);
+    loaded.0 = Some(target_stage);
 }
 
 /// Converts an LDtk top-left rectangle `(px, width, height)` to Bevy world `(min, max)`.
@@ -93,7 +190,11 @@ fn int_field(entity: &EntityInstance, name: &str, default: i32) -> i32 {
     entity.get_int_field(name).copied().unwrap_or(default)
 }
 
-fn string_field<'a>(entity: &'a EntityInstance, name: &str, default: &'a str) -> &'a str {
+fn bool_field(entity: &EntityInstance, name: &str, default: bool) -> bool {
+    entity.get_bool_field(name).copied().unwrap_or(default)
+}
+
+fn string_field<'a>(entity: &'a EntityInstance, name: &'a str, default: &'a str) -> &'a str {
     entity
         .get_string_field(name)
         .map(String::as_str)
@@ -110,6 +211,8 @@ fn parse_archetype(s: &str) -> EnemyArchetype {
         EnemyArchetype::ArcaneZoner
     } else if s.eq_ignore_ascii_case("assassin") || s.eq_ignore_ascii_case("shadow") {
         EnemyArchetype::ShadowAssassin
+    } else if s.eq_ignore_ascii_case("borealis") || s.eq_ignore_ascii_case("cryo_boss") {
+        EnemyArchetype::CryoBoss
     } else if s.eq_ignore_ascii_case("boss") || s.eq_ignore_ascii_case("vulcanus") {
         EnemyArchetype::FoundryBoss
     } else {
@@ -181,6 +284,51 @@ fn build_encounter_waves(
                 Vec2::new(max_x - 150.0, floor_y + 34.0),
             )]],
         ),
+        "cryo_server_farm" => (
+            false,
+            true,
+            vec![
+                // Wave 1: High-mobility Cryo Server Ambush across mirror-ice decks!
+                vec![
+                    (EnemyArchetype::ShadowAssassin, Vec2::new(min_x + 120.0, floor_y + 84.0)),
+                    (EnemyArchetype::ArcaneZoner, Vec2::new(max_x - 120.0, floor_y + 84.0)),
+                    (EnemyArchetype::LightStriker, Vec2::new(cx, floor_y + 150.0)),
+                ],
+                // Wave 2: Twin Arc Weavers + Heavy Slag Enforcer guarding the server rack exit!
+                vec![
+                    (EnemyArchetype::HeavyBrawler, Vec2::new(cx, floor_y + 24.0)),
+                    (EnemyArchetype::ArcaneZoner, Vec2::new(min_x + 120.0, floor_y + 84.0)),
+                    (EnemyArchetype::ShadowAssassin, Vec2::new(max_x - 120.0, floor_y + 150.0)),
+                ],
+            ],
+        ),
+        "cryo_vault" => (
+            false,
+            true,
+            vec![
+                // Wave 1: Elite sub-zero security perimeter!
+                vec![
+                    (EnemyArchetype::HeavyBrawler, Vec2::new(cx, floor_y + 24.0)),
+                    (EnemyArchetype::ArcaneZoner, Vec2::new(min_x + 125.0, floor_y + 152.0)),
+                    (EnemyArchetype::ShadowAssassin, Vec2::new(max_x - 125.0, floor_y + 92.0)),
+                ],
+                // Wave 2: Final Coolant Vault surge before Borealis's Absolute-Zero Sanctum!
+                vec![
+                    (EnemyArchetype::HeavyBrawler, Vec2::new(cx - 50.0, floor_y + 24.0)),
+                    (EnemyArchetype::ShadowAssassin, Vec2::new(min_x + 125.0, floor_y + 92.0)),
+                    (EnemyArchetype::ArcaneZoner, Vec2::new(max_x - 125.0, floor_y + 152.0)),
+                    (EnemyArchetype::ShadowAssassin, Vec2::new(cx + 60.0, floor_y + 152.0)),
+                ],
+            ],
+        ),
+        "borealis_boss" => (
+            true,
+            false, // Right side is the solid Cryo Sanctum containment wall
+            vec![vec![(
+                EnemyArchetype::CryoBoss,
+                Vec2::new(max_x - 150.0, floor_y + 34.0),
+            )]],
+        ),
         _ => (
             false,
             true,
@@ -211,10 +359,14 @@ fn hydrate_ldtk_entities(
                 spawn_point.0 = center;
             }
             "SolidBlock" => {
-                commands.spawn((
+                let mut ec = commands.spawn((
                     Name::new(format!("LdtkSolid_{}", inst.iid)),
+                    StageWorldEntity,
                     SolidRect::from_min_max(min, max),
                 ));
+                if bool_field(inst, "icy", false) {
+                    ec.insert(IceSurface);
+                }
             }
             "Slope" => {
                 let start = Vec2::new(
@@ -225,10 +377,14 @@ fn hydrate_ldtk_entities(
                     float_field(inst, "end_x", max.x),
                     float_field(inst, "end_y", max.y),
                 );
-                commands.spawn((
+                let mut ec = commands.spawn((
                     Name::new(format!("LdtkSlope_{}", inst.iid)),
+                    StageWorldEntity,
                     SlopeSegment::new(start, end),
                 ));
+                if bool_field(inst, "icy", false) {
+                    ec.insert(IceSurface);
+                }
             }
             "BoostPad" => {
                 let target_speed = float_field(inst, "target_speed", 500.0);

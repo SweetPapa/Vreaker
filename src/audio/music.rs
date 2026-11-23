@@ -8,7 +8,7 @@ use bevy::audio::{PlaybackMode, Volume};
 use bevy::prelude::*;
 
 use crate::enemies::EncounterStatus;
-use crate::state::{AppState, StageRestartEvent};
+use crate::state::{AppState, CampaignState, StageId, StageRestartEvent, StageSwitchEvent};
 
 /// Crossfade duration (`seconds`) when transitioning between Stage 1 and Boss themes.
 pub const BGM_CROSSFADE_SECS: f32 = 0.8;
@@ -47,6 +47,8 @@ pub enum MusicTrackId {
     Title,
     Stage1,
     Boss,
+    Stage2,
+    BossBorealis,
     StageClear,
 }
 
@@ -56,6 +58,8 @@ pub struct MusicTracks {
     pub title: Option<Handle<AudioSource>>,
     pub stage1: Option<Handle<AudioSource>>,
     pub boss: Option<Handle<AudioSource>>,
+    pub stage2: Option<Handle<AudioSource>>,
+    pub boss_borealis: Option<Handle<AudioSource>>,
     pub stage_clear: Option<Handle<AudioSource>>,
 }
 
@@ -65,6 +69,8 @@ impl MusicTracks {
             MusicTrackId::Title => self.title.clone(),
             MusicTrackId::Stage1 => self.stage1.clone(),
             MusicTrackId::Boss => self.boss.clone(),
+            MusicTrackId::Stage2 => self.stage2.clone(),
+            MusicTrackId::BossBorealis => self.boss_borealis.clone(),
             MusicTrackId::StageClear => self.stage_clear.clone(),
         }
     }
@@ -111,6 +117,8 @@ fn load_music_tracks_gracefully(asset_server: Res<AssetServer>, mut tracks: ResM
     tracks.title = load_track_if_exists(&asset_server, "title_theme");
     tracks.stage1 = load_track_if_exists(&asset_server, "stage1_theme");
     tracks.boss = load_track_if_exists(&asset_server, "boss_theme");
+    tracks.stage2 = load_track_if_exists(&asset_server, "stage2_theme");
+    tracks.boss_borealis = load_track_if_exists(&asset_server, "boss_borealis");
     tracks.stage_clear = load_track_if_exists(&asset_server, "stage_clear");
 
     if tracks.stage1.is_none() && tracks.boss.is_none() {
@@ -120,40 +128,73 @@ fn load_music_tracks_gracefully(asset_server: Res<AssetServer>, mut tracks: ResM
     }
 }
 
-/// Computes which track should currently be playing based on `AppState` and Boss Encounter state.
+/// Computes which Stage 1 track should currently be playing (kept for backward compatibility).
 pub fn resolve_desired_track(
     app_state: AppState,
     enc_status: &EncounterStatus,
     current_desired: Option<MusicTrackId>,
 ) -> Option<MusicTrackId> {
+    resolve_desired_track_for_stage(
+        app_state,
+        StageId::Stage1Foundry,
+        enc_status,
+        current_desired,
+    )
+}
+
+/// Computes which track should currently be playing based on `AppState`, active [`StageId`],
+/// and Boss Encounter state.
+pub fn resolve_desired_track_for_stage(
+    app_state: AppState,
+    stage: StageId,
+    enc_status: &EncounterStatus,
+    current_desired: Option<MusicTrackId>,
+) -> Option<MusicTrackId> {
+    let stage_track = match stage {
+        StageId::Stage1Foundry => MusicTrackId::Stage1,
+        StageId::Stage2Cryo => MusicTrackId::Stage2,
+    };
+    let boss_track = match stage {
+        StageId::Stage1Foundry => MusicTrackId::Boss,
+        StageId::Stage2Cryo => MusicTrackId::BossBorealis,
+    };
+
     match app_state {
         AppState::Title => Some(MusicTrackId::Title),
         AppState::Victory => Some(MusicTrackId::StageClear),
-        AppState::Paused => current_desired.or(Some(MusicTrackId::Stage1)),
+        AppState::Paused => current_desired.or(Some(stage_track)),
         AppState::Playing => {
             if enc_status.victory_delay_timer.is_some() {
                 // Boss just exploded — fade down Boss theme cleanly right before Stage Clear fanfare!
                 None
             } else if enc_status.is_boss && enc_status.active_title.is_some() {
-                Some(MusicTrackId::Boss)
+                Some(boss_track)
             } else {
-                Some(MusicTrackId::Stage1)
+                Some(stage_track)
             }
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_desired_music_track(
     mut commands: Commands,
     state: Res<State<AppState>>,
+    campaign: Res<CampaignState>,
     enc_status: Res<EncounterStatus>,
     tracks: Res<MusicTracks>,
     mut restarts: MessageReader<StageRestartEvent>,
+    mut switches: MessageReader<StageSwitchEvent>,
     mut active: ResMut<ActiveMusicState>,
     mut channels: Query<&mut BgmChannel>,
 ) {
-    let restarted = restarts.read().next().is_some();
-    let desired = resolve_desired_track(*state.get(), &enc_status, active.desired);
+    let restarted = restarts.read().next().is_some() || switches.read().next().is_some();
+    let desired = resolve_desired_track_for_stage(
+        *state.get(),
+        campaign.active_stage,
+        &enc_status,
+        active.desired,
+    );
 
     if desired == active.desired && !restarted {
         return;

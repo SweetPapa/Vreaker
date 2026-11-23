@@ -116,7 +116,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--preset",
-        choices=["levy", "vulcanus", "strider", "enforcer", "arc_weaver", "phantom"],
+        choices=["levy", "vulcanus", "borealis", "strider", "enforcer", "arc_weaver", "phantom"],
         default="levy",
         help="Story Bible character preset (controls scale, weapons, and emission mask).",
     )
@@ -130,6 +130,7 @@ def preset_height(preset: str) -> float:
     return {
         "levy": 2.38,
         "vulcanus": 2.65,
+        "borealis": 2.60,
         "strider": 2.32,
         "enforcer": 2.48,
         "arc_weaver": 2.36,
@@ -773,6 +774,13 @@ def build_native_emission_texture(mesh_obj: bpy.types.Object, preset: str) -> No
             out[:, :, 0] = 1.00 * strength
             out[:, :, 1] = 0.58 * strength
             out[:, :, 2] = 0.10 * strength
+        elif preset == "borealis":
+            # Glacial-cyan optic visor, Stasis Diamond core, and crystalline frost edges
+            mask = (b > 0.55) & (g > 0.50) & ((b - r) > 0.16)
+            strength = np.clip((b + g * 0.7 - r * 1.4 - 0.12) * 2.2, 0.0, 1.0) * mask
+            out[:, :, 0] = 0.22 * strength
+            out[:, :, 1] = 0.88 * strength
+            out[:, :, 2] = 1.00 * strength
         elif preset == "strider":
             # Crimson optic visor & crimson forearm blade emitters
             mask = (r > 0.50) & ((r - g) > 0.22) & ((r - b) > 0.18)
@@ -964,6 +972,7 @@ def build_enemy_weapon(arm_obj: bpy.types.Object, preset: str) -> None:
     """Attaches a bespoke 2085 Story Bible weapon with native emissive edge to `handslot.r`."""
     specs = {
         "vulcanus": ("MoltenCleaver", (0.20, 0.22, 0.26), (1.0, 0.52, 0.08), 1.38, 0.24),
+        "borealis": ("CryoHalberd", (0.72, 0.84, 0.96), (0.22, 0.90, 1.0), 1.48, 0.22),
         "strider": ("CrimsonBlade", (0.22, 0.24, 0.30), (1.0, 0.14, 0.22), 0.96, 0.09),
         "enforcer": ("HydraulicHammer", (0.85, 0.65, 0.12), (1.0, 0.55, 0.12), 1.12, 0.28),
         "arc_weaver": ("TeslaStaff", (0.55, 0.60, 0.72), (0.78, 0.28, 1.0), 1.24, 0.14),

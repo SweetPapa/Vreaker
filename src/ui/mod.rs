@@ -20,7 +20,8 @@ use crate::combat::{
     StageRunTimer,
 };
 use crate::enemies::{
-    ArenaScore, BlastZoneKoEvent, BossState, EncounterStatus, EnemyHealth,
+    ArenaScore, BlastZoneKoEvent, BossState, EncounterStatus, EnemyArchetype, EnemyFighter,
+    EnemyHealth,
 };
 use crate::input::{
     ControlConfig, DpadCalibration, DpadWizardState, InputHandlingSet, LiveRawGamepadState,
@@ -31,8 +32,8 @@ use crate::player::{Player, PlayerSpriteVisual};
 use crate::rendering::{
     PixelWorldCamera, SpriteSheetAnimator, VIRTUAL_HEIGHT, VIRTUAL_WIDTH, compute_integer_viewport,
 };
-use crate::state::{AppState, GameStateCommand, StateTransitionSet};
-use crate::story::{STAGE1_RELIC_NAMES, SpeakerId, StoryCommsState};
+use crate::state::{AppState, CampaignState, GameStateCommand, StageId, StateTransitionSet};
+use crate::story::{SpeakerId, StoryCommsState, stage_relic_names};
 
 const COLOR_PANEL_BG: Color = Color::srgba(0.05, 0.07, 0.12, 0.92);
 const COLOR_OVERLAY_BG: Color = Color::srgba(0.02, 0.03, 0.06, 0.72);
@@ -73,6 +74,7 @@ struct StoryUiAssets {
     portrait_mina: Option<Handle<Image>>,
     portrait_barnaby: Option<Handle<Image>>,
     portrait_vulcanus: Option<Handle<Image>>,
+    portrait_borealis: Option<Handle<Image>>,
 }
 
 impl StoryUiAssets {
@@ -82,6 +84,7 @@ impl StoryUiAssets {
             SpeakerId::Mina => self.portrait_mina.clone(),
             SpeakerId::Barnaby => self.portrait_barnaby.clone(),
             SpeakerId::Vulcanus => self.portrait_vulcanus.clone(),
+            SpeakerId::Borealis => self.portrait_borealis.clone(),
         }
     }
 }
@@ -105,7 +108,8 @@ struct MenuFocus {
 /// Action triggered by an interactive UI menu button.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 enum MenuButtonAction {
-    Play,
+    PlayStage1,
+    PlayStage2,
     Resume,
     MusicVolume,
     SfxVolume,
@@ -202,6 +206,14 @@ struct BossHudContainer;
 /// Boss title & Phase badge text.
 #[derive(Component)]
 struct BossNameText;
+
+/// Dynamic portrait image on the Boss Health Bar (swaps between Vulcanus and Borealis!).
+#[derive(Component)]
+struct BossPortraitImage;
+
+/// Live equipped Aspect Diamond badge on the P1 Levy Smash `%` HUD card.
+#[derive(Component)]
+struct AspectDiamondBadgeText;
 
 /// Dynamic width fill bar for the Boss Health Bar.
 #[derive(Component)]
@@ -338,6 +350,7 @@ fn load_story_ui_assets_gracefully(
     story_ui.portrait_mina = load_prompt_icon(&asset_server, "ui/portraits/mina.png");
     story_ui.portrait_barnaby = load_prompt_icon(&asset_server, "ui/portraits/barnaby.png");
     story_ui.portrait_vulcanus = load_prompt_icon(&asset_server, "ui/portraits/vulcanus.png");
+    story_ui.portrait_borealis = load_prompt_icon(&asset_server, "ui/portraits/borealis.png");
 }
 
 fn in_menu_state(state: Res<State<AppState>>) -> bool {
@@ -406,7 +419,7 @@ fn spawn_title_screen(
     dpad_cal: Res<DpadCalibration>,
 ) {
     focus.index = 0;
-    focus.count = 4;
+    focus.count = 5;
     focus.show_moveset_guide = false;
 
     commands
@@ -483,27 +496,38 @@ fn spawn_title_screen(
 
                 // Buttons container
                 card.spawn(Node {
-                    margin: UiRect::top(Val::Px(18.0)),
+                    margin: UiRect::top(Val::Px(14.0)),
                     flex_direction: FlexDirection::Column,
                     align_items: AlignItems::Center,
-                    row_gap: Val::Px(12.0),
+                    row_gap: Val::Px(10.0),
                     ..default()
                 })
                 .with_children(|btns| {
-                    spawn_menu_button(btns, "PLAY STAGE 1  [ENTER / A]", MenuButtonAction::Play, 0);
+                    spawn_menu_button(
+                        btns,
+                        "STAGE 1: IRON FOUNDRY  [ENTER / A]",
+                        MenuButtonAction::PlayStage1,
+                        0,
+                    );
+                    spawn_menu_button(
+                        btns,
+                        "STAGE 2: CRYO CONDUIT  (NEW!)",
+                        MenuButtonAction::PlayStage2,
+                        1,
+                    );
                     spawn_menu_button(
                         btns,
                         "SMASH MOVESET & PAD MONITOR  [F1]",
                         MenuButtonAction::ToggleMovesetGuide,
-                        1,
+                        2,
                     );
                     let cal_label = if dpad_cal.is_active() {
                         "RE-CALIBRATE D-PAD  [F2]  (OK)"
                     } else {
                         "CALIBRATE D-PAD  [F2]"
                     };
-                    spawn_menu_button(btns, cal_label, MenuButtonAction::CalibrateDpad, 2);
-                    spawn_menu_button(btns, "QUIT", MenuButtonAction::Quit, 3);
+                    spawn_menu_button(btns, cal_label, MenuButtonAction::CalibrateDpad, 3);
+                    spawn_menu_button(btns, "QUIT", MenuButtonAction::Quit, 4);
                 });
             });
 
@@ -539,6 +563,7 @@ fn spawn_title_screen(
                     ("RIFT BUSTER (HOLD=CHG)", &icons.xbox_rb, &icons.key_l, "RB / Y  |  L / Shift"),
                     ("DASH / SPIN CHARGE", &icons.xbox_rt, &icons.key_e, "RT / R2  |  E / Ctrl"),
                     ("SHIELD / ROLL / SPOT-DODGE", &icons.xbox_lb, &icons.key_q, "LB / LT + Dir  |  Q / F + Dir  (Config in Pause)"),
+                    ("CYCLE ASPECT DIAMOND", &icons.stick_l, &None, "L3 (Left Stick Click)  |  R  (Rift / Forge / Stasis)"),
                     ("TAUNT / PAUSE", &icons.xbox_menu, &icons.key_esc, "Select=Taunt, Start=Pause  |  T / Esc"),
                 ] {
                     legend
@@ -710,6 +735,7 @@ fn spawn_playing_hud(
                                     ))
                                     .with_children(|frame| {
                                         frame.spawn((
+                                            BossPortraitImage,
                                             ImageNode::new(v_port.clone()),
                                             Node {
                                                 width: Val::Percent(100.0),
@@ -1015,6 +1041,15 @@ fn spawn_playing_hud(
                                                 },
                                                 TextColor(COLOR_TEXT_PRIMARY),
                                             ));
+                                            pct.spawn((
+                                                AspectDiamondBadgeText,
+                                                Text::new("ASPECT: RIFT [CYAN]"),
+                                                TextFont {
+                                                    font_size: FontSize::Px(10.0),
+                                                    ..default()
+                                                },
+                                                TextColor(COLOR_ACCENT_CYAN),
+                                            ));
                                         });
                                     });
 
@@ -1314,9 +1349,11 @@ fn spawn_config_button<M: Component>(
         });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_victory_screen(
     mut commands: Commands,
     mut focus: ResMut<MenuFocus>,
+    campaign: Res<CampaignState>,
     score: Res<ArenaScore>,
     combo: Res<ComboTracker>,
     run_timer: Res<StageRunTimer>,
@@ -1324,15 +1361,18 @@ fn spawn_victory_screen(
     story_ui: Res<StoryUiAssets>,
 ) {
     focus.index = 0;
-    focus.count = 2;
+    focus.count = 3;
 
+    let stage = campaign.active_stage;
+    let is_stage2 = stage == StageId::Stage2Cryo;
     let total = run_timer.elapsed_secs.max(0.0);
     let mins = (total / 60.0).floor() as u32;
     let secs = (total % 60.0).floor() as u32;
     let cs = (total.fract() * 100.0).floor() as u32;
     let rank = score.compute_stage_rank(total, combo.best_hits);
 
-    let keepsakes_summary: String = STAGE1_RELIC_NAMES
+    let relic_names = stage_relic_names(stage);
+    let keepsakes_summary: String = relic_names
         .iter()
         .enumerate()
         .map(|(i, name)| {
@@ -1344,6 +1384,13 @@ fn spawn_victory_screen(
         })
         .collect::<Vec<_>>()
         .join("   •   ");
+
+    let stage_header = format!("STAGE {} CLEAR!   •   RANK  {rank}", stage.number());
+    let diamond_subtitle = if is_stage2 {
+        "STASIS DIAMOND UNLOCKED  (2 / 4 ASPECT DIAMONDS)  •  BOREALIS DEFEATED"
+    } else {
+        "FORGE DIAMOND UNLOCKED  (1 / 4 ASPECT DIAMONDS)  •  VULCANUS DEFEATED"
+    };
 
     commands
         .spawn((
@@ -1412,7 +1459,7 @@ fn spawn_victory_screen(
                 }
 
                 card.spawn((
-                    Text::new(format!("STAGE 1 CLEAR!   •   RANK  {rank}")),
+                    Text::new(stage_header),
                     TextFont {
                         font_size: FontSize::Px(40.0),
                         ..default()
@@ -1420,9 +1467,7 @@ fn spawn_victory_screen(
                     TextColor(COLOR_ACCENT_CYAN),
                 ));
                 card.spawn((
-                    Text::new(
-                        "FORGE DIAMOND RECOVERED  (1 / 4 ASPECT DIAMONDS)  •  VULCANUS DEFEATED",
-                    ),
+                    Text::new(diamond_subtitle),
                     TextFont {
                         font_size: FontSize::Px(14.0),
                         ..default()
@@ -1454,8 +1499,14 @@ fn spawn_victory_screen(
                     TextColor(COLOR_TEXT_MUTED),
                 ));
 
-                let epilogue = if comms.all_stage1_relics_found() || score.relics_collected >= 3 {
-                    "MINA: \"All three 1700s keepsakes intact... Alright, cowboy—maybe you really did fall out of history. Next stop: The Cryo Conduit.\""
+                let epilogue = if is_stage2 {
+                    if comms.all_stage1_relics_found() || score.relics_collected >= 3 {
+                        "MINA: \"Stasis Diamond AND every frozen keepsake recovered! Press R/L3 to cycle Rift, Forge & Stasis—next stop: Vex-9 in the Neon Skyline!\""
+                    } else {
+                        "LEVY: \"Two Diamonds down, two left before the portal opens home. Let's thaw out and move.\""
+                    }
+                } else if comms.all_stage1_relics_found() || score.relics_collected >= 3 {
+                    "MINA: \"All three 1700s keepsakes intact... Forge Diamond unlocked! Next stop: The Cryo Conduit.\""
                 } else {
                     "LEVY: \"One Diamond down, three to go. Hold on back home—I'm coming.\""
                 };
@@ -1472,12 +1523,38 @@ fn spawn_victory_screen(
                     margin: UiRect::top(Val::Px(10.0)),
                     flex_direction: FlexDirection::Column,
                     align_items: AlignItems::Center,
-                    row_gap: Val::Px(12.0),
+                    row_gap: Val::Px(10.0),
                     ..default()
                 })
                 .with_children(|btns| {
-                    spawn_menu_button(btns, "PLAY AGAIN  [ENTER / A]", MenuButtonAction::RestartStage, 0);
-                    spawn_menu_button(btns, "RETURN TO TITLE", MenuButtonAction::ReturnToTitle, 1);
+                    if is_stage2 {
+                        spawn_menu_button(
+                            btns,
+                            "REPLAY STAGE 2: CRYO CONDUIT  [ENTER / A]",
+                            MenuButtonAction::RestartStage,
+                            0,
+                        );
+                        spawn_menu_button(
+                            btns,
+                            "REPLAY STAGE 1 (WITH FORGE & STASIS!)",
+                            MenuButtonAction::PlayStage1,
+                            1,
+                        );
+                    } else {
+                        spawn_menu_button(
+                            btns,
+                            "NEXT STAGE: CRYO CONDUIT  [ENTER / A]",
+                            MenuButtonAction::PlayStage2,
+                            0,
+                        );
+                        spawn_menu_button(
+                            btns,
+                            "REPLAY STAGE 1 (WITH FORGE DIAMOND!)",
+                            MenuButtonAction::RestartStage,
+                            1,
+                        );
+                    }
+                    spawn_menu_button(btns, "RETURN TO TITLE", MenuButtonAction::ReturnToTitle, 2);
                 });
             });
         });
@@ -1656,8 +1733,8 @@ fn spawn_menu_button(
             action,
             MenuItemIndex(index),
             Node {
-                width: Val::Px(280.0),
-                height: Val::Px(46.0),
+                width: Val::Px(370.0),
+                height: Val::Px(42.0),
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
                 border: UiRect::all(Val::Px(2.0)),
@@ -1689,8 +1766,11 @@ fn dispatch_menu_action(
     state_commands: &mut MessageWriter<GameStateCommand>,
 ) {
     match action {
-        MenuButtonAction::Play => {
-            state_commands.write(GameStateCommand::StartGame);
+        MenuButtonAction::PlayStage1 => {
+            state_commands.write(GameStateCommand::SelectStageAndPlay(StageId::Stage1Foundry));
+        }
+        MenuButtonAction::PlayStage2 => {
+            state_commands.write(GameStateCommand::SelectStageAndPlay(StageId::Stage2Cryo));
         }
         MenuButtonAction::Resume => {
             state_commands.write(GameStateCommand::ResumeGame);
@@ -2187,12 +2267,23 @@ fn smash_percent_color(percent: f32) -> Color {
 
 #[allow(clippy::type_complexity)]
 fn update_smash_percent_hud(
+    campaign: Res<CampaignState>,
     player_pct: Query<&DamagePercent, With<Player>>,
     telemetry: Res<LastHitTelemetry>,
     mut p1_labels: Query<
         (&mut Text, &mut TextColor),
         (
             With<PlayerPercentText>,
+            Without<TargetPercentText>,
+            Without<TargetHitDetailText>,
+            Without<AspectDiamondBadgeText>,
+        ),
+    >,
+    mut aspect_labels: Query<
+        (&mut Text, &mut TextColor),
+        (
+            With<AspectDiamondBadgeText>,
+            Without<PlayerPercentText>,
             Without<TargetPercentText>,
             Without<TargetHitDetailText>,
         ),
@@ -2203,6 +2294,7 @@ fn update_smash_percent_hud(
             With<TargetPercentText>,
             Without<PlayerPercentText>,
             Without<TargetHitDetailText>,
+            Without<AspectDiamondBadgeText>,
         ),
     >,
     mut detail_labels: Query<
@@ -2211,6 +2303,7 @@ fn update_smash_percent_hud(
             With<TargetHitDetailText>,
             Without<PlayerPercentText>,
             Without<TargetPercentText>,
+            Without<AspectDiamondBadgeText>,
         ),
     >,
 ) {
@@ -2219,6 +2312,13 @@ fn update_smash_percent_hud(
     {
         **text = format!("{:.0}%", pct.0);
         *color = TextColor(smash_percent_color(pct.0));
+    }
+
+    if let Ok((mut text, mut color)) = aspect_labels.single_mut() {
+        let unlocked = campaign.unlocked_diamonds().len();
+        let hint = if unlocked > 1 { "[R/L3] " } else { "" };
+        **text = format!("{hint}{}", campaign.active_diamond.short_tag());
+        *color = TextColor(campaign.active_diamond.ui_color());
     }
 
     if let Ok((mut text, mut color)) = target_labels.single_mut() {
@@ -2241,40 +2341,66 @@ fn update_smash_percent_hud(
 #[allow(clippy::type_complexity)]
 fn update_zone_and_ko_banner(
     time: Res<Time>,
+    campaign: Res<CampaignState>,
     score: Res<ArenaScore>,
     players: Query<&KinematicBody, With<Player>>,
     mut ko_events: MessageReader<BlastZoneKoEvent>,
     mut header_labels: Query<&mut Text, (With<ZoneHeaderText>, Without<KoBannerText>)>,
     mut banner_labels: Query<(&mut KoBannerText, &mut Text), Without<ZoneHeaderText>>,
 ) {
+    let stage = campaign.active_stage;
     let zone_name = players
         .single()
-        .map(|b| {
-            if b.position.x >= 8520.0 {
-                "FINAL SANCTUM: IRON TITAN VULCANUS"
-            } else if b.position.x >= 7440.0 {
-                "SECTOR 8: CITADEL APPROACH"
-            } else if b.position.x >= 6780.0 {
-                "SECTOR 7: REACTOR CRUCIBLE"
-            } else if b.position.x >= 5280.0 {
-                "SECTOR 6: CONVEYOR TOWER"
-            } else if b.position.x >= 3660.0 {
-                "SECTOR 5: SKY-GONDOLA ABYSS"
-            } else if b.position.x >= 1740.0 {
-                "SECTOR 4: SLAG-SLOPE SPEEDWAY"
-            } else if b.position.x >= 1100.0 {
-                "SECTOR 3: SMELTER CAGE"
-            } else if b.position.x >= 470.0 {
-                "SECTOR 2: SMELTER SHAFT"
-            } else {
-                "SECTOR 1: OUTER DECK"
+        .map(|b| match stage {
+            StageId::Stage1Foundry => {
+                if b.position.x >= 8520.0 {
+                    "FINAL SANCTUM: IRON TITAN VULCANUS"
+                } else if b.position.x >= 7440.0 {
+                    "SECTOR 8: CITADEL APPROACH"
+                } else if b.position.x >= 6780.0 {
+                    "SECTOR 7: REACTOR CRUCIBLE"
+                } else if b.position.x >= 5280.0 {
+                    "SECTOR 6: CONVEYOR TOWER"
+                } else if b.position.x >= 3660.0 {
+                    "SECTOR 5: SKY-GONDOLA ABYSS"
+                } else if b.position.x >= 1740.0 {
+                    "SECTOR 4: SLAG-SLOPE SPEEDWAY"
+                } else if b.position.x >= 1100.0 {
+                    "SECTOR 3: SMELTER CAGE"
+                } else if b.position.x >= 470.0 {
+                    "SECTOR 2: SMELTER SHAFT"
+                } else {
+                    "SECTOR 1: OUTER DECK"
+                }
+            }
+            StageId::Stage2Cryo => {
+                if b.position.x >= 8520.0 {
+                    "FINAL SANCTUM: SUB-ZERO WARDEN BOREALIS"
+                } else if b.position.x >= 7440.0 {
+                    "SECTOR 8: PERMAFROST APPROACH"
+                } else if b.position.x >= 6780.0 {
+                    "SECTOR 7: SUB-ZERO COOLANT VAULT"
+                } else if b.position.x >= 5280.0 {
+                    "SECTOR 6: COOLING TOWER ASCENT"
+                } else if b.position.x >= 3660.0 {
+                    "SECTOR 5: LIQUID-NITROGEN ABYSS"
+                } else if b.position.x >= 1740.0 {
+                    "SECTOR 4: MIRROR-ICE SPEEDWAY"
+                } else if b.position.x >= 1100.0 {
+                    "SECTOR 3: AI SERVER FARM"
+                } else if b.position.x >= 470.0 {
+                    "SECTOR 2: CRYO-SHAFT CLIMB"
+                } else {
+                    "SECTOR 1: INTAKE AIRLOCK"
+                }
             }
         })
-        .unwrap_or("SECTOR 1: OUTER DECK");
+        .unwrap_or("SECTOR 1");
 
     if let Ok(mut header) = header_labels.single_mut() {
         **header = format!(
-            "IRON FOUNDRY  •  {}  |  KOs: {}  |  CORES: {}/{}  |  RELICS: {}/{}",
+            "{}  •  {}  |  KOs: {}  |  CORES: {}/{}  |  RELICS: {}/{}",
+            stage.short_name(),
             zone_name,
             score.ko_count,
             score.cores_collected,
@@ -2308,11 +2434,12 @@ fn update_zone_and_ko_banner(
     }
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn update_encounter_and_boss_hud(
     enc_status: Res<EncounterStatus>,
     wizard: Res<DpadWizardState>,
-    bosses: Query<(&EnemyHealth, &BossState)>,
+    story_ui: Res<StoryUiAssets>,
+    bosses: Query<(&EnemyFighter, &EnemyHealth, &BossState)>,
     mut enc_texts: Query<
         &mut Text,
         (
@@ -2322,8 +2449,9 @@ fn update_encounter_and_boss_hud(
             Without<KoBannerText>,
         ),
     >,
-    mut boss_boxes: Query<&mut Node, (With<BossHudContainer>, Without<BossHpFillBar>)>,
-    mut boss_names: Query<&mut Text, (With<BossNameText>, Without<EncounterBannerText>)>,
+    mut boss_boxes: Query<(&mut Node, &mut BorderColor), (With<BossHudContainer>, Without<BossHpFillBar>)>,
+    mut boss_portraits: Query<&mut ImageNode, With<BossPortraitImage>>,
+    mut boss_names: Query<(&mut Text, &mut TextColor), (With<BossNameText>, Without<EncounterBannerText>)>,
     mut boss_fills: Query<(&mut Node, &mut BackgroundColor), (With<BossHpFillBar>, Without<BossHudContainer>)>,
 ) {
     if let Ok(mut text) = enc_texts.single_mut() {
@@ -2349,29 +2477,64 @@ fn update_encounter_and_boss_hud(
     }
 
     let active_boss = bosses.iter().next();
-    for mut node in &mut boss_boxes {
+    for (mut node, mut border) in &mut boss_boxes {
         node.display = if active_boss.is_some() {
             Display::Flex
         } else {
             Display::None
         };
+        if let Some((fighter, _, _)) = active_boss {
+            *border = BorderColor::all(if fighter.archetype == EnemyArchetype::CryoBoss {
+                Color::srgb(0.32, 0.84, 1.0)
+            } else {
+                Color::srgb(0.95, 0.32, 0.18)
+            });
+        }
     }
 
-    if let Some((hp, boss)) = active_boss {
-        if let Ok(mut name) = boss_names.single_mut() {
+    if let Some((fighter, hp, boss)) = active_boss {
+        let is_cryo = fighter.archetype == EnemyArchetype::CryoBoss;
+        if let Some(port) = if is_cryo {
+            story_ui.portrait_borealis.as_ref()
+        } else {
+            story_ui.portrait_vulcanus.as_ref()
+        } {
+            for mut img in &mut boss_portraits {
+                img.image = port.clone();
+            }
+        }
+        if let Ok((mut name, mut name_col)) = boss_names.single_mut() {
             let phase_tag = if boss.phase >= 2 {
-                "PHASE 2 OVERDRIVE!"
+                if is_cryo {
+                    "PHASE 2 ABSOLUTE ZERO!"
+                } else {
+                    "PHASE 2 OVERDRIVE!"
+                }
             } else {
                 "PHASE 1"
             };
             **name = format!(
-                "IRON TITAN: VULCANUS  •  {}  ({:.0}/{:.0} HP)",
-                phase_tag, hp.current, hp.max
+                "{}  •  {}  ({:.0}/{:.0} HP)",
+                fighter.archetype.display_name(),
+                phase_tag,
+                hp.current,
+                hp.max
             );
+            *name_col = TextColor(if is_cryo {
+                Color::srgb(0.50, 0.90, 1.0)
+            } else {
+                COLOR_ACCENT_AMBER
+            });
         }
         if let Ok((mut bar_node, mut bg)) = boss_fills.single_mut() {
             bar_node.width = Val::Percent(hp.ratio() * 100.0);
-            *bg = BackgroundColor(if boss.phase >= 2 {
+            *bg = BackgroundColor(if is_cryo {
+                if boss.phase >= 2 {
+                    Color::srgb(0.55, 0.95, 1.0)
+                } else {
+                    Color::srgb(0.24, 0.72, 1.0)
+                }
+            } else if boss.phase >= 2 {
                 Color::srgb(1.0, 0.62, 0.14)
             } else {
                 Color::srgb(0.96, 0.24, 0.20)
@@ -2505,6 +2668,7 @@ fn update_input_readout_hud(
     };
 
     let state_label = match body.state {
+        MovementState::Grounded if body.on_ice => "ICE-SLIDE".to_string(),
         MovementState::Grounded => "GROUND".to_string(),
         MovementState::SpinCharging { charge } => format!("SPIN {:3.0}%", charge * 100.0),
         MovementState::Airborne => "AIR".to_string(),

@@ -20,8 +20,13 @@ use crate::physics::{
     SolidRect, SpikeHazard, TimedHazardBeam,
 };
 use crate::player::{DEFAULT_PLAYER_SPAWN, Player};
-use crate::state::{AppState, GameStateCommand, StageRestartEvent};
-use crate::story::{STAGE1_RELIC_NAMES, StoryBeat, StoryTriggerEvent, stage1_relic_index_for_x};
+use crate::state::{
+    AppState, AspectDiamond, CampaignState, GameStateCommand, StageId, StageRestartEvent,
+    StageSwitchEvent,
+};
+use crate::story::{
+    StoryBeat, StoryTriggerEvent, relic_beat_for_stage, stage_relic_names, stage1_relic_index_for_x,
+};
 
 /// Respawn delay in seconds after knocking an endless arena fighter into a Smash blast zone.
 pub const ENEMY_KO_RESPAWN_SECS: f32 = 3.0;
@@ -37,11 +42,17 @@ pub enum EnemyArchetype {
     ArcaneZoner,
     /// High-speed ambush hunter rendered with baked Hooded Rogue sprite sheets (shadow dash-through + dive).
     ShadowAssassin,
-    /// Towering 144px End-of-Level Boss (*IRON TITAN: VULCANUS*) with 2-phase melee & shockwave kit.
+    /// Towering 144px Stage 1 Boss (*IRON TITAN: VULCANUS*) with 2-phase melee & shockwave kit.
     FoundryBoss,
+    /// Towering 144px Stage 2 Boss (*SUB-ZERO WARDEN: BOREALIS*) guarding the Stasis Diamond.
+    CryoBoss,
 }
 
 impl EnemyArchetype {
+    pub fn is_boss(self) -> bool {
+        matches!(self, EnemyArchetype::FoundryBoss | EnemyArchetype::CryoBoss)
+    }
+
     pub fn display_name(self) -> &'static str {
         match self {
             EnemyArchetype::LightStriker => "STRIDER DRONE (MK-II)",
@@ -49,6 +60,7 @@ impl EnemyArchetype {
             EnemyArchetype::ArcaneZoner => "ARC WEAVER",
             EnemyArchetype::ShadowAssassin => "PHANTOM INTERCEPTOR",
             EnemyArchetype::FoundryBoss => "IRON TITAN: VULCANUS",
+            EnemyArchetype::CryoBoss => "SUB-ZERO WARDEN: BOREALIS",
         }
     }
 
@@ -59,6 +71,7 @@ impl EnemyArchetype {
             EnemyArchetype::ArcaneZoner => 118.0,
             EnemyArchetype::ShadowAssassin => 215.0,
             EnemyArchetype::FoundryBoss => 126.0,
+            EnemyArchetype::CryoBoss => 148.0,
         }
     }
 
@@ -69,6 +82,7 @@ impl EnemyArchetype {
             EnemyArchetype::ArcaneZoner => 260.0,
             EnemyArchetype::ShadowAssassin => 165.0,
             EnemyArchetype::FoundryBoss => 78.0,
+            EnemyArchetype::CryoBoss => 86.0,
         }
     }
 
@@ -79,6 +93,7 @@ impl EnemyArchetype {
             EnemyArchetype::ArcaneZoner => 0.48,
             EnemyArchetype::ShadowAssassin => 0.30,
             EnemyArchetype::FoundryBoss => 0.48,
+            EnemyArchetype::CryoBoss => 0.44,
         }
     }
 
@@ -88,7 +103,7 @@ impl EnemyArchetype {
             EnemyArchetype::HeavyBrawler => Vec2::new(12.0, 19.0),
             EnemyArchetype::ArcaneZoner => Vec2::new(10.0, 18.0),
             EnemyArchetype::ShadowAssassin => Vec2::new(10.0, 18.0),
-            EnemyArchetype::FoundryBoss => Vec2::new(20.0, 30.0),
+            EnemyArchetype::FoundryBoss | EnemyArchetype::CryoBoss => Vec2::new(20.0, 30.0),
         }
     }
 
@@ -99,6 +114,7 @@ impl EnemyArchetype {
             EnemyArchetype::ArcaneZoner => 38.0,
             EnemyArchetype::ShadowAssassin => 44.0,
             EnemyArchetype::FoundryBoss => 240.0,
+            EnemyArchetype::CryoBoss => 280.0,
         }
     }
 }
@@ -164,12 +180,13 @@ impl BossState {
     }
 }
 
-/// Delayed ground-rune Arcane Pillar Eruption summoned by [`EnemyArchetype::ArcaneZoner`].
+/// Delayed ground-rune Arcane / Stasis Cryo Pillar Eruption.
 #[derive(Component, Debug, Clone)]
 pub struct PendingArcanePillar {
     pub owner: Entity,
     pub pos: Vec2,
     pub timer: f32,
+    pub is_cryo: bool,
 }
 
 /// Arena / stage AI fighter component.
@@ -322,7 +339,7 @@ impl WallTurret {
 }
 
 /// Enemy energy bolt fired by a [`WallTurret`], [`EnemyArchetype::ArcaneZoner`],
-/// or [`EnemyArchetype::FoundryBoss`] ground shockwave.
+/// [`EnemyArchetype::FoundryBoss`] ground shockwave, or [`EnemyArchetype::CryoBoss`] frost wave.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct TurretProjectile {
     pub velocity: Vec2,
@@ -330,6 +347,8 @@ pub struct TurretProjectile {
     pub is_arcane: bool,
     /// True when fired as a Boss ground-skimming molten shockwave (glides across deck).
     pub is_magma_wave: bool,
+    /// True when fired by Sub-Zero Warden Borealis (renders glacial frost-blue energy).
+    pub is_cryo_wave: bool,
 }
 
 /// Smash Arena blast-zone volume (`min..=max`); leaving triggers a KO flash, SFX, and respawn.
@@ -492,7 +511,7 @@ pub fn spawn_stage_enemy(
     spawn_enemy_internal(commands, archetype, home_pos, spawn_invuln, false, leash_bounds)
 }
 
-/// Spawns the towering End-of-Level Boss (*IRON TITAN: VULCANUS*).
+/// Spawns the towering Stage 1 Boss (*IRON TITAN: VULCANUS*).
 pub fn spawn_foundry_boss(
     commands: &mut Commands,
     home_pos: Vec2,
@@ -502,6 +521,27 @@ pub fn spawn_foundry_boss(
     let e = spawn_enemy_internal(
         commands,
         EnemyArchetype::FoundryBoss,
+        home_pos,
+        true,
+        false,
+        Some((arena_min_x + 36.0, arena_max_x - 36.0)),
+    );
+    commands
+        .entity(e)
+        .insert(BossState::new(arena_min_x + 36.0, arena_max_x - 36.0));
+    e
+}
+
+/// Spawns the towering Stage 2 Boss (*SUB-ZERO WARDEN: BOREALIS*).
+pub fn spawn_cryo_boss(
+    commands: &mut Commands,
+    home_pos: Vec2,
+    arena_min_x: f32,
+    arena_max_x: f32,
+) -> Entity {
+    let e = spawn_enemy_internal(
+        commands,
+        EnemyArchetype::CryoBoss,
         home_pos,
         true,
         false,
@@ -527,7 +567,7 @@ fn spawn_enemy_internal(
     fighter.leash_bounds = leash_bounds;
 
     let hurt_radius = match archetype {
-        EnemyArchetype::FoundryBoss => 26.0,
+        EnemyArchetype::FoundryBoss | EnemyArchetype::CryoBoss => 26.0,
         EnemyArchetype::HeavyBrawler => 19.0,
         _ => 16.0,
     };
@@ -537,6 +577,7 @@ fn spawn_enemy_internal(
         EnemyArchetype::ArcaneZoner => 1.10,
         EnemyArchetype::ShadowAssassin => 1.12,
         EnemyArchetype::FoundryBoss => 0.38,
+        EnemyArchetype::CryoBoss => 0.42,
     };
 
     let mut ec = commands.spawn((
@@ -651,11 +692,18 @@ fn reset_encounter_state_on_title(
 
 fn reset_arena_score_on_restart(
     mut restarts: MessageReader<StageRestartEvent>,
+    mut switches: MessageReader<StageSwitchEvent>,
     mut score: ResMut<ArenaScore>,
     mut enc_status: ResMut<EncounterStatus>,
     mut checkpoint: ResMut<PlayerCheckpoint>,
 ) {
-    if restarts.read().next().is_some() {
+    let switched = switches.read().next().is_some();
+    let restarted = restarts.read().next().is_some();
+    if switched {
+        *score = ArenaScore::default();
+        *enc_status = EncounterStatus::default();
+        *checkpoint = PlayerCheckpoint::default();
+    } else if restarted {
         let cores_total = score.cores_total;
         let relics_total = score.relics_total;
         *score = ArenaScore {
@@ -671,6 +719,7 @@ fn reset_arena_score_on_restart(
 /// Advances fallback progression checkpoints on grounded landings across all 8 Sectors
 /// (complemented by explicit glowing [`CheckpointBeacon`] pylons!).
 fn update_player_checkpoint(
+    campaign: Res<CampaignState>,
     players: Query<&KinematicBody, With<Player>>,
     mut checkpoint: ResMut<PlayerCheckpoint>,
 ) {
@@ -680,16 +729,29 @@ fn update_player_checkpoint(
     if body.state != MovementState::Grounded {
         return;
     }
-    for (threshold_x, cp_pos) in [
-        (335.0, Vec2::new(380.0, 56.0)),
-        (680.0, Vec2::new(720.0, 248.0)),
-        (1780.0, Vec2::new(1810.0, 248.0)),
-        (3490.0, Vec2::new(3530.0, 248.0)),
-        (4860.0, Vec2::new(4940.0, 368.0)),
-        (6630.0, Vec2::new(6680.0, 248.0)),
-        (7480.0, Vec2::new(7540.0, 248.0)),
-        (8300.0, Vec2::new(8360.0, 248.0)),
-    ] {
+    let stage_cps: &[(f32, Vec2)] = match campaign.active_stage {
+        StageId::Stage1Foundry => &[
+            (335.0, Vec2::new(380.0, 56.0)),
+            (680.0, Vec2::new(720.0, 248.0)),
+            (1780.0, Vec2::new(1810.0, 248.0)),
+            (3490.0, Vec2::new(3530.0, 248.0)),
+            (4860.0, Vec2::new(4940.0, 368.0)),
+            (6630.0, Vec2::new(6680.0, 248.0)),
+            (7480.0, Vec2::new(7540.0, 248.0)),
+            (8300.0, Vec2::new(8360.0, 248.0)),
+        ],
+        StageId::Stage2Cryo => &[
+            (340.0, Vec2::new(390.0, 48.0)),
+            (840.0, Vec2::new(890.0, 248.0)),
+            (1820.0, Vec2::new(1870.0, 248.0)),
+            (3500.0, Vec2::new(3560.0, 248.0)),
+            (5320.0, Vec2::new(5380.0, 348.0)),
+            (6700.0, Vec2::new(6750.0, 248.0)),
+            (7500.0, Vec2::new(7560.0, 248.0)),
+            (8300.0, Vec2::new(8360.0, 248.0)),
+        ],
+    };
+    for &(threshold_x, cp_pos) in stage_cps {
         if body.position.x >= threshold_x && checkpoint.0.x < cp_pos.x {
             checkpoint.0 = cp_pos;
         }
@@ -744,6 +806,7 @@ fn update_checkpoint_beacons(
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn update_collectible_items(
     mut commands: Commands,
+    campaign: Res<CampaignState>,
     mut score: ResMut<ArenaScore>,
     mut status: ResMut<EncounterStatus>,
     mut players: Query<(Entity, &KinematicBody, &mut DamagePercent), With<Player>>,
@@ -775,12 +838,8 @@ fn update_collectible_items(
                 score.relics_collected += 1;
                 pct.0 = (pct.0 - 20.0).max(0.0);
                 let idx = stage1_relic_index_for_x(item.pos.x);
-                let keepsake = STAGE1_RELIC_NAMES[idx];
-                let beat = match idx {
-                    0 => StoryBeat::Relic1Compass,
-                    1 => StoryBeat::Relic2Portrait,
-                    _ => StoryBeat::Relic3Locket,
-                };
+                let keepsake = stage_relic_names(campaign.active_stage)[idx];
+                let beat = relic_beat_for_stage(campaign.active_stage, idx);
                 story_events.write(StoryTriggerEvent(beat));
                 status.banner_text = format!(
                     "1700s KEEPSAKE: {}  ({}/{})",
@@ -788,7 +847,7 @@ fn update_collectible_items(
                     score.relics_collected,
                     score.relics_total.max(score.relics_collected)
                 );
-                status.banner_timer = 3.2;
+                status.banner_timer = 3.6;
                 move_events.write(MovementEvent {
                     entity: player_entity,
                     kind: MovementFxKind::CollectRelic,
@@ -819,9 +878,11 @@ fn update_collectible_items(
 }
 
 /// Processes melee/Buster damage against cracked [`BreakableWall`] bulkheads, shattering them open!
-#[allow(clippy::type_complexity)]
+/// Equipping the **Forge Diamond** applies `2.0x` thermal melt damage against ice & steel bulkheads!
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn update_breakable_walls(
     mut commands: Commands,
+    campaign: Res<CampaignState>,
     mut hit_events: MessageReader<CombatHitEvent>,
     mut score: ResMut<ArenaScore>,
     mut status: ResMut<EncounterStatus>,
@@ -840,6 +901,13 @@ fn update_breakable_walls(
         commands.entity(entity).remove::<Hitstun>();
     }
 
+    let thermal_mult = if campaign.active_diamond == AspectDiamond::Forge {
+        2.0
+    } else {
+        1.0
+    };
+    let is_cryo = campaign.active_stage == StageId::Stage2Cryo;
+
     let mut broken: HashSet<Entity> = HashSet::new();
     for ev in hit_events.read() {
         if broken.contains(&ev.target) {
@@ -848,12 +916,16 @@ fn update_breakable_walls(
         let Ok((wall_entity, mut wall, _, _)) = walls.get_mut(ev.target) else {
             continue;
         };
-        wall.hp = (wall.hp - ev.damage).max(0.0);
+        wall.hp = (wall.hp - ev.damage * thermal_mult).max(0.0);
         if wall.hp <= 0.0 {
             broken.insert(wall_entity);
             score.walls_broken += 1;
-            status.banner_text = "BULKHEAD SHATTERED  •  SECRET PATH OPEN!".to_string();
-            status.banner_timer = 2.2;
+            status.banner_text = if thermal_mult > 1.5 && is_cryo {
+                "FORGE MELT! CRYO BULKHEAD SHATTERED  •  SECRET PATH OPEN!".to_string()
+            } else {
+                "BULKHEAD SHATTERED  •  SECRET PATH OPEN!".to_string()
+            };
+            status.banner_timer = 2.4;
             move_events.write(MovementEvent {
                 entity: ev.attacker,
                 kind: MovementFxKind::WallBreak,
@@ -864,7 +936,11 @@ fn update_breakable_walls(
             vis_events.write(CombatVisualEvent::ShockwaveRing {
                 pos: wall.center,
                 max_radius: 54.0,
-                color_rgb: [5.0, 2.4, 0.4],
+                color_rgb: if is_cryo {
+                    [0.45, 3.8, 5.6]
+                } else {
+                    [5.0, 2.4, 0.4]
+                },
             });
             commands.entity(wall_entity).despawn();
         }
@@ -943,6 +1019,7 @@ fn update_timed_hazard_beams(
 fn update_lockdown_encounters(
     mut commands: Commands,
     fixed_time: Res<Time<Fixed>>,
+    campaign: Res<CampaignState>,
     mut score: ResMut<ArenaScore>,
     mut status: ResMut<EncounterStatus>,
     mut state_commands: MessageWriter<GameStateCommand>,
@@ -952,6 +1029,12 @@ fn update_lockdown_encounters(
     alive_enemies: Query<Entity, With<EnemyFighter>>,
     mut encounters: Query<&mut LockdownEncounter>,
 ) {
+    let is_stage2 = campaign.active_stage == StageId::Stage2Cryo;
+    let gate_ring_rgb = if is_stage2 {
+        [0.45, 3.8, 5.6]
+    } else {
+        [4.8, 0.55, 0.45]
+    };
     let dt = fixed_time.delta_secs();
     if status.banner_timer > 0.0 {
         status.banner_timer = (status.banner_timer - dt).max(0.0);
@@ -1000,7 +1083,7 @@ fn update_lockdown_encounters(
                     vis_events.write(CombatVisualEvent::ShockwaveRing {
                         pos: Vec2::new(enc.min_x + 8.0, enc.floor_y + 42.0),
                         max_radius: 46.0,
-                        color_rgb: [4.8, 0.55, 0.45],
+                        color_rgb: gate_ring_rgb,
                     });
 
                     if enc.spawn_right_gate {
@@ -1021,7 +1104,7 @@ fn update_lockdown_encounters(
                         vis_events.write(CombatVisualEvent::ShockwaveRing {
                             pos: Vec2::new(enc.max_x - 8.0, enc.floor_y + 42.0),
                             max_radius: 46.0,
-                            color_rgb: [4.8, 0.55, 0.45],
+                            color_rgb: gate_ring_rgb,
                         });
                     }
 
@@ -1029,7 +1112,12 @@ fn update_lockdown_encounters(
                     spawn_encounter_wave(&mut commands, &mut enc, 0, &mut vis_events);
 
                     if enc.is_boss {
-                        story_events.write(StoryTriggerEvent(StoryBeat::BossVulcanusIntro));
+                        let intro_beat = if is_stage2 {
+                            StoryBeat::BossBorealisIntro
+                        } else {
+                            StoryBeat::BossVulcanusIntro
+                        };
+                        story_events.write(StoryTriggerEvent(intro_beat));
                     }
 
                     status.banner_text = if enc.is_boss {
@@ -1083,9 +1171,17 @@ fn update_lockdown_encounters(
                         };
 
                         if enc.is_boss {
-                            story_events.write(StoryTriggerEvent(StoryBeat::BossVulcanusDefeated));
-                            status.banner_text =
-                                "FORGE DIAMOND RECOVERED  •  STAGE CLEAR!".to_string();
+                            if is_stage2 {
+                                story_events
+                                    .write(StoryTriggerEvent(StoryBeat::BossBorealisDefeated));
+                                status.banner_text =
+                                    "STASIS DIAMOND RECOVERED  •  STAGE 2 CLEAR!".to_string();
+                            } else {
+                                story_events
+                                    .write(StoryTriggerEvent(StoryBeat::BossVulcanusDefeated));
+                                status.banner_text =
+                                    "FORGE DIAMOND RECOVERED  •  STAGE CLEAR!".to_string();
+                            }
                             status.banner_timer = 4.0;
                             status.victory_delay_timer = Some(1.15);
                         } else {
@@ -1128,10 +1224,10 @@ fn spawn_encounter_wave(
     };
     let bounds = Some((enc.min_x + 28.0, enc.max_x - 28.0));
     for &(arch, pos) in wave {
-        let e = if arch == EnemyArchetype::FoundryBoss {
-            spawn_foundry_boss(commands, pos, enc.min_x, enc.max_x)
-        } else {
-            spawn_stage_enemy(commands, arch, pos, true, bounds)
+        let e = match arch {
+            EnemyArchetype::FoundryBoss => spawn_foundry_boss(commands, pos, enc.min_x, enc.max_x),
+            EnemyArchetype::CryoBoss => spawn_cryo_boss(commands, pos, enc.min_x, enc.max_x),
+            _ => spawn_stage_enemy(commands, arch, pos, true, bounds),
         };
         enc.active_enemies.push(e);
         vis_events.write(CombatVisualEvent::EnemyBlink {
@@ -1170,11 +1266,16 @@ fn apply_enemy_hp_damage_and_kos(
         };
         hp.current = (hp.current - ev.damage).max(0.0);
 
-        // Trigger dramatic Phase 2 Overdrive on Boss at <= 50% HP!
+        // Trigger dramatic Phase 2 Overdrive on Boss! (Vulcanus <= 50% HP, Borealis <= 55% HP)
+        let phase2_threshold = if fighter.archetype == EnemyArchetype::CryoBoss {
+            0.55
+        } else {
+            0.50
+        };
         if let Some(mut boss) = maybe_boss
             && !boss.enraged_triggered
             && hp.current > 0.0
-            && hp.current <= hp.max * 0.50
+            && hp.current <= hp.max * phase2_threshold
         {
             boss.enraged_triggered = true;
             boss.phase = 2;
@@ -1182,13 +1283,22 @@ fn apply_enemy_hp_damage_and_kos(
                 .entity(ev.target)
                 .insert(Invulnerable::new(0.45));
             vis_events.write(CombatVisualEvent::CounterTrigger { pos: body.position });
+            let is_cryo = fighter.archetype == EnemyArchetype::CryoBoss;
             vis_events.write(CombatVisualEvent::ShockwaveRing {
                 pos: body.position,
                 max_radius: 86.0,
-                color_rgb: [5.2, 2.2, 0.35],
+                color_rgb: if is_cryo {
+                    [0.45, 3.8, 5.6]
+                } else {
+                    [5.2, 2.2, 0.35]
+                },
             });
-            enc_status.banner_text = "VULCANUS OVERDRIVE  •  PHASE 2!".to_string();
-            enc_status.banner_timer = 2.6;
+            enc_status.banner_text = if is_cryo {
+                "BOREALIS: ABSOLUTE ZERO OVERDRIVE  •  PHASE 2!".to_string()
+            } else {
+                "VULCANUS OVERDRIVE  •  PHASE 2!".to_string()
+            };
+            enc_status.banner_timer = 2.8;
         }
 
         if hp.current <= 0.0 {
@@ -1207,16 +1317,18 @@ fn apply_enemy_hp_damage_and_kos(
                 edge,
                 final_percent: percent.0,
             });
+            let is_boss = fighter.archetype.is_boss();
+            let ko_rgb = if fighter.archetype == EnemyArchetype::CryoBoss {
+                [0.45, 4.0, 5.8]
+            } else {
+                [5.2, 2.8, 0.45]
+            };
             vis_events.write(CombatVisualEvent::ShockwaveRing {
                 pos: body.position,
-                max_radius: if fighter.archetype == EnemyArchetype::FoundryBoss {
-                    110.0
-                } else {
-                    44.0
-                },
-                color_rgb: [5.2, 2.8, 0.45],
+                max_radius: if is_boss { 110.0 } else { 44.0 },
+                color_rgb: ko_rgb,
             });
-            if fighter.archetype == EnemyArchetype::FoundryBoss {
+            if is_boss {
                 vis_events.write(CombatVisualEvent::CounterTrigger { pos: body.position });
                 vis_events.write(CombatVisualEvent::GroundSlam { pos: body.position });
             }
@@ -1267,18 +1379,28 @@ fn update_boss_ai(
 
         // Keep boss cleanly contained inside the Boss Sanctum walls
         body.position.x = body.position.x.clamp(boss.arena_min_x, boss.arena_max_x);
+        let is_cryo = fighter.archetype == EnemyArchetype::CryoBoss;
+        let boss_rgb: [f32; 3] = if is_cryo {
+            [0.42, 3.8, 5.6]
+        } else {
+            [5.2, 2.0, 0.35]
+        };
 
-        // Detect touchdown from Leap Tremor Slam -> unleash dual floor shockwaves + wide slam hitbox!
+        // Detect touchdown from Leap Tremor / Permafrost Shatter Slam -> unleash dual floor waves!
         if boss.slam_pending && body.state == MovementState::Grounded && body.velocity.y <= 0.0 {
             boss.slam_pending = false;
             let slam_pos = Vec2::new(body.position.x, body.feet_y() + 10.0);
             commands.spawn((
-                Name::new("BossTremorSlamHitbox"),
+                Name::new(if is_cryo {
+                    "BorealisPermafrostSlam"
+                } else {
+                    "BossTremorSlamHitbox"
+                }),
                 Hitbox {
                     owner: entity,
                     team: Team::Enemy,
                     offset: Vec2::ZERO,
-                    radius: 68.0,
+                    radius: if is_cryo { 72.0 } else { 68.0 },
                     damage: 16.0,
                     base_kb: 255.0,
                     kb_scale: 2.8,
@@ -1296,15 +1418,26 @@ fn update_boss_ai(
                 },
                 Transform::from_xyz(slam_pos.x, slam_pos.y, 1.5),
             ));
-            // Roll twin ground-skimming magma shockwaves left and right across the Boss Deck!
+            // Roll twin ground-skimming magma or glacial frost waves left and right across the Boss Deck!
             for dir in [-1.0_f32, 1.0_f32] {
-                let speed = if boss.phase >= 2 { 275.0 } else { 225.0 };
+                let speed = if is_cryo {
+                    if boss.phase >= 2 { 320.0 } else { 260.0 }
+                } else if boss.phase >= 2 {
+                    275.0
+                } else {
+                    225.0
+                };
                 commands.spawn((
-                    Name::new("BossMagmaWave"),
+                    Name::new(if is_cryo {
+                        "BossCryoFrostWave"
+                    } else {
+                        "BossMagmaWave"
+                    }),
                     TurretProjectile {
                         velocity: Vec2::new(dir * speed, 0.0),
                         is_arcane: false,
-                        is_magma_wave: true,
+                        is_magma_wave: !is_cryo,
+                        is_cryo_wave: is_cryo,
                     },
                     Hitbox {
                         owner: entity,
@@ -1333,11 +1466,11 @@ fn update_boss_ai(
             vis_events.write(CombatVisualEvent::GroundSlam { pos: slam_pos });
             vis_events.write(CombatVisualEvent::ShockwaveRing {
                 pos: slam_pos,
-                max_radius: 76.0,
-                color_rgb: [5.2, 2.0, 0.35],
+                max_radius: 78.0,
+                color_rgb: boss_rgb,
             });
             fighter.state = EnemyAiState::Recovery {
-                remaining: if boss.phase >= 2 { 0.62 } else { 0.90 },
+                remaining: if boss.phase >= 2 { 0.58 } else { 0.86 },
             };
             continue;
         }
@@ -1374,35 +1507,43 @@ fn update_boss_ai(
                 }
 
                 // Choose next telegraphed Boss pattern!
-                if dist <= 82.0 && delta.y.abs() < 48.0 {
-                    // Close range: Greataxe Cleave (prime Down-B Counter punish!)
+                let close_range = if is_cryo { 88.0 } else { 82.0 };
+                if dist <= close_range && delta.y.abs() < 48.0 {
+                    // Close range: Greataxe / Cryo Halberd Cleave (prime Down-B Counter punish!)
                     body.ground_speed = 0.0;
                     body.velocity.x *= 0.2;
                     fighter.attack_variant = 0;
                     fighter.state = EnemyAiState::Telegraph {
-                        remaining: if boss.phase >= 2 { 0.42 } else { 0.54 },
+                        remaining: if boss.phase >= 2 { 0.40 } else { 0.50 },
                     };
                 } else if fighter.special_cooldown <= 0.0 && body.state == MovementState::Grounded {
                     body.ground_speed = 0.0;
                     body.velocity.x = 0.0;
-                    boss.pattern_step = (boss.pattern_step + 1) % if boss.phase >= 2 { 4 } else { 2 };
+                    let pattern_count = if is_cryo {
+                        if boss.phase >= 2 { 5 } else { 3 }
+                    } else if boss.phase >= 2 {
+                        4
+                    } else {
+                        2
+                    };
+                    boss.pattern_step = (boss.pattern_step + 1) % pattern_count;
                     match boss.pattern_step {
                         0 => {
-                            // Pattern A: Magma Bull-Rush Charge across the sanctum!
+                            // Pattern A: Magma Bull-Rush (Vulcanus) / Permafrost Flash-Glide (Borealis)
                             fighter.attack_variant = 3;
                             fighter.state = EnemyAiState::Telegraph {
-                                remaining: if boss.phase >= 2 { 0.48 } else { 0.60 },
+                                remaining: if boss.phase >= 2 { 0.44 } else { 0.56 },
                             };
                         }
                         1 => {
-                            // Pattern B: Leap Foundry Tremor Slam!
+                            // Pattern B: Leap Tremor Slam / Permafrost Shatter Slam!
                             fighter.attack_variant = 1;
                             fighter.state = EnemyAiState::Telegraph {
-                                remaining: if boss.phase >= 2 { 0.44 } else { 0.55 },
+                                remaining: if boss.phase >= 2 { 0.42 } else { 0.52 },
                             };
                         }
                         2 => {
-                            // Pattern C (Phase 2): 3-Way Forge Volley Laser Barrage with 0.48s charge sightline!
+                            // Pattern C: Forge Volley (Vulcanus P2) / Cryo Prism Laser Fan (Borealis P1+P2)!
                             let aim_dir = (p_pos - body.position)
                                 .normalize_or(Vec2::new(body.facing, 0.0));
                             boss.locked_aim_dir = aim_dir;
@@ -1417,17 +1558,27 @@ fn update_boss_ai(
                             vis_events.write(CombatVisualEvent::ShockwaveRing {
                                 pos: origin,
                                 max_radius: 34.0,
-                                color_rgb: [5.4, 3.6, 0.55],
+                                color_rgb: boss_rgb,
                             });
                         }
-                        _ => {
-                            // Pattern D (Phase 2): TITAN CYCLONE GREATAXE WHIRLWIND (360° sword_spin)!
+                        3 => {
+                            // Pattern D (Phase 2): TITAN CYCLONE / BLIZZARD HALBERD WHIRLWIND (360° sword_spin)!
                             fighter.attack_variant = 6;
-                            fighter.state = EnemyAiState::Telegraph { remaining: 0.54 };
+                            fighter.state = EnemyAiState::Telegraph { remaining: 0.50 };
                             vis_events.write(CombatVisualEvent::ShockwaveRing {
                                 pos: body.position,
                                 max_radius: 52.0,
-                                color_rgb: [5.4, 2.2, 0.32],
+                                color_rgb: boss_rgb,
+                            });
+                        }
+                        _ => {
+                            // Pattern E (Borealis Phase 2): STASIS FROST PILLAR ERUPTIONS!
+                            fighter.attack_variant = 7;
+                            fighter.state = EnemyAiState::Telegraph { remaining: 0.46 };
+                            vis_events.write(CombatVisualEvent::ShockwaveRing {
+                                pos: body.position + Vec2::new(0.0, 12.0),
+                                max_radius: 44.0,
+                                color_rgb: boss_rgb,
                             });
                         }
                     }
@@ -1438,12 +1589,12 @@ fn update_boss_ai(
                 remaining -= dt;
                 if remaining <= 0.0 {
                     match fighter.attack_variant {
-                        // 0: Titan Greataxe Cleave!
+                        // 0: Titan Greataxe / Glacial Halberd Cleave!
                         0 => {
-                            let lunge = 145.0 * phase_speed;
+                            let lunge = if is_cryo { 170.0 } else { 145.0 } * phase_speed;
                             body.ground_speed = body.facing * lunge;
                             body.velocity.x = body.ground_speed;
-                            let offset = Vec2::new(38.0, 4.0);
+                            let offset = Vec2::new(if is_cryo { 42.0 } else { 38.0 }, 4.0);
                             let pos = body.position + Vec2::new(offset.x * body.facing, offset.y);
                             commands.spawn((
                                 Name::new("BossGreataxeCleave"),
@@ -1452,7 +1603,7 @@ fn update_boss_ai(
                                     owner: entity,
                                     team: Team::Enemy,
                                     offset,
-                                    radius: 30.0,
+                                    radius: if is_cryo { 33.0 } else { 30.0 },
                                     damage: 16.0,
                                     base_kb: 245.0,
                                     kb_scale: 2.7,
@@ -1474,43 +1625,54 @@ fn update_boss_ai(
                                 pos,
                                 facing: body.facing,
                                 angle_rad: 0.05,
-                                radius: 44.0,
+                                radius: if is_cryo { 48.0 } else { 44.0 },
                                 heavy: true,
-                                color_rgb: [5.2, 2.0, 0.35],
+                                color_rgb: boss_rgb,
                             });
                             fighter.state = EnemyAiState::Attacking { remaining: 0.22 };
                         }
-                        // 1: Leap Foundry Tremor Slam!
+                        // 1: Leap Foundry Tremor / Permafrost Shatter Slam!
                         1 => {
                             let jump_vx = (delta.x * 1.45).clamp(-260.0, 260.0);
                             body.velocity = Vec2::new(jump_vx, 485.0);
                             body.ground_speed = jump_vx;
                             body.state = MovementState::Airborne;
                             boss.slam_pending = true;
-                            fighter.special_cooldown = if boss.phase >= 2 { 2.0 } else { 2.8 };
+                            fighter.special_cooldown = if boss.phase >= 2 { 1.9 } else { 2.7 };
                             vis_events.write(CombatVisualEvent::ShockwaveRing {
                                 pos: body.position,
                                 max_radius: 44.0,
-                                color_rgb: [5.0, 2.4, 0.4],
+                                color_rgb: boss_rgb,
                             });
                             fighter.state = EnemyAiState::Attacking { remaining: 0.85 };
                         }
-                        // 2: Phase 2 Forge Volley 3-Way Molten Fan along the telegraphed warning sightlines!
+                        // 2: Forge Volley (Vulcanus) / Cryo Prism Laser Fan (Borealis)!
                         2 => {
                             let base_dir = boss
                                 .locked_aim_dir
                                 .normalize_or(Vec2::new(body.facing, 0.0));
                             let base_angle = base_dir.y.atan2(base_dir.x);
                             let origin = body.position + Vec2::new(body.facing * 26.0, 10.0);
-                            for spread in [-0.30_f32, 0.0, 0.30] {
+                            let spreads: &[f32] = if is_cryo && boss.phase >= 2 {
+                                &[-0.44, -0.22, 0.0, 0.22, 0.44]
+                            } else {
+                                &[-0.30, 0.0, 0.30]
+                            };
+                            let proj_speed = if is_cryo { 275.0 } else { 245.0 };
+                            for &spread in spreads {
                                 let a = base_angle + spread;
-                                let vel = Vec2::new(a.cos(), a.sin()) * 245.0;
+                                let vel = Vec2::new(a.cos(), a.sin()) * proj_speed;
                                 commands.spawn((
-                                    Name::new("BossForgeOrb"),
+                                    Name::new(if is_cryo {
+                                        "BossCryoPrismBolt"
+                                    } else {
+                                        "BossForgeOrb"
+                                    }),
                                     TurretProjectile {
                                         velocity: vel,
                                         is_arcane: false,
-                                        is_magma_wave: true,
+                                        is_magma_wave: !is_cryo,
+                                        is_cryo_wave: is_cryo,
                                     },
                                     Hitbox {
                                         owner: entity,
@@ -1538,15 +1700,15 @@ fn update_boss_ai(
                             }
                             vis_events.write(CombatVisualEvent::ShockwaveRing {
                                 pos: origin,
-                                max_radius: 42.0,
-                                color_rgb: [5.2, 1.8, 0.3],
+                                max_radius: 44.0,
+                                color_rgb: boss_rgb,
                             });
-                            fighter.special_cooldown = 2.1;
+                            fighter.special_cooldown = if boss.phase >= 2 { 1.95 } else { 2.4 };
                             fighter.state = EnemyAiState::Attacking { remaining: 0.25 };
                         }
-                        // 6: Phase 2 TITAN CYCLONE GREATAXE WHIRLWIND (360° dual-sided spin!)
+                        // 6: Phase 2 TITAN CYCLONE / BLIZZARD HALBERD WHIRLWIND (360° dual-sided spin!)
                         6 => {
-                            let spin_spd = body.facing * 195.0;
+                            let spin_spd = body.facing * if is_cryo { 230.0 } else { 195.0 };
                             body.ground_speed = spin_spd;
                             body.velocity.x = spin_spd;
                             commands.spawn((
@@ -1563,7 +1725,7 @@ fn update_boss_ai(
                                     kb_scale: 2.8,
                                     momentum_mult: 0.20,
                                     angle_deg: 48.0,
-                                    attacker_speed: 195.0,
+                                    attacker_speed: spin_spd.abs(),
                                     facing: body.facing,
                                     lifetime: Timer::from_seconds(0.68, TimerMode::Once),
                                     piercing: true,
@@ -1578,14 +1740,44 @@ fn update_boss_ai(
                             vis_events.write(CombatVisualEvent::CycloneSpin {
                                 pos: body.position + Vec2::new(0.0, 6.0),
                                 radius: 52.0,
-                                color_rgb: [5.4, 2.1, 0.32],
+                                color_rgb: boss_rgb,
                             });
-                            fighter.special_cooldown = 2.2;
+                            fighter.special_cooldown = 2.1;
                             fighter.state = EnemyAiState::Attacking { remaining: 0.72 };
                         }
-                        // 3: Magma Bull-Rush Charge!
+                        // 7: Borealis Phase 2 STASIS FROST PILLAR ERUPTIONS (twin telegraphed ice pillars!)
+                        7 => {
+                            let floor_y = body.feet_y();
+                            for offset_x in [-72.0_f32, 0.0, 72.0] {
+                                let px = (p_pos.x + offset_x)
+                                    .clamp(boss.arena_min_x + 12.0, boss.arena_max_x - 12.0);
+                                let rune_pos = Vec2::new(px, floor_y + 2.0);
+                                commands.spawn((
+                                    Name::new("BorealisStasisPillar"),
+                                    PendingArcanePillar {
+                                        owner: entity,
+                                        pos: rune_pos,
+                                        timer: 0.68,
+                                        is_cryo: true,
+                                    },
+                                ));
+                                vis_events.write(CombatVisualEvent::ArcanePillarTelegraph {
+                                    pos: rune_pos,
+                                    duration: 0.68,
+                                });
+                            }
+                            fighter.special_cooldown = 2.4;
+                            fighter.state = EnemyAiState::Attacking { remaining: 0.30 };
+                        }
+                        // 3: Magma Bull-Rush / Permafrost Flash-Glide Charge!
                         _ => {
-                            let charge_spd = if boss.phase >= 2 { 365.0 } else { 310.0 };
+                            let charge_spd = if is_cryo {
+                                if boss.phase >= 2 { 415.0 } else { 355.0 }
+                            } else if boss.phase >= 2 {
+                                365.0
+                            } else {
+                                310.0
+                            };
                             body.ground_speed = body.facing * charge_spd;
                             body.velocity.x = body.ground_speed;
                             let offset = Vec2::new(24.0, 0.0);
@@ -1619,7 +1811,7 @@ fn update_boss_ai(
                                 pos: body.position,
                                 facing: body.facing,
                             });
-                            fighter.special_cooldown = if boss.phase >= 2 { 1.9 } else { 2.6 };
+                            fighter.special_cooldown = if boss.phase >= 2 { 1.8 } else { 2.5 };
                             fighter.state = EnemyAiState::Attacking { remaining: 0.48 };
                         }
                     }
@@ -1635,7 +1827,7 @@ fn update_boss_ai(
                         vis_events.write(CombatVisualEvent::CycloneSpin {
                             pos: body.position + Vec2::new(0.0, 6.0),
                             radius: 52.0,
-                            color_rgb: [5.4, 2.6, 0.35],
+                            color_rgb: boss_rgb,
                         });
                     }
                     let at_wall = (body.position.x <= boss.arena_min_x + 4.0 && body.facing < 0.0)
@@ -2052,7 +2244,9 @@ fn update_enemy_fighter_ai(
                             };
                         }
                     }
-                    EnemyArchetype::ArcaneZoner | EnemyArchetype::FoundryBoss => {
+                    EnemyArchetype::ArcaneZoner
+                    | EnemyArchetype::FoundryBoss
+                    | EnemyArchetype::CryoBoss => {
                         if dist <= fighter.archetype.attack_range() && delta.y.abs() < 36.0 {
                             body.ground_speed = 0.0;
                             body.velocity.x *= 0.25;
@@ -2114,6 +2308,7 @@ fn update_enemy_fighter_ai(
                                     velocity: aim_dir * 235.0,
                                     is_arcane: true,
                                     is_magma_wave: false,
+                                    is_cryo_wave: false,
                                 },
                                 Hitbox {
                                     owner: entity,
@@ -2253,6 +2448,7 @@ fn update_enemy_fighter_ai(
                                     owner: entity,
                                     pos: rune_pos,
                                     timer: 0.62,
+                                    is_cryo: false,
                                 },
                             ));
                             vis_events.write(CombatVisualEvent::ArcanePillarTelegraph {
@@ -2283,6 +2479,7 @@ fn update_enemy_fighter_ai(
                                     velocity: aim_dir * 310.0,
                                     is_arcane: false,
                                     is_magma_wave: false,
+                                    is_cryo_wave: false,
                                 },
                                 Hitbox {
                                     owner: entity,
@@ -2452,7 +2649,7 @@ fn update_enemy_fighter_ai(
                         EnemyArchetype::ArcaneZoner => 0.58,
                         EnemyArchetype::ShadowAssassin => 0.42,
                         EnemyArchetype::LightStriker => 0.42,
-                        EnemyArchetype::FoundryBoss => 0.72,
+                        EnemyArchetype::FoundryBoss | EnemyArchetype::CryoBoss => 0.72,
                     };
                     fighter.state = EnemyAiState::Recovery { remaining: rec };
                 } else {
@@ -2514,7 +2711,11 @@ fn tick_pending_arcane_pillars(
             vis_events.write(CombatVisualEvent::ShockwaveRing {
                 pos: pillar.pos + Vec2::new(0.0, 10.0),
                 max_radius: 42.0,
-                color_rgb: [4.2, 0.75, 5.4],
+                color_rgb: if pillar.is_cryo {
+                    [0.42, 3.8, 5.6]
+                } else {
+                    [4.2, 0.75, 5.4]
+                },
             });
             commands.entity(entity).despawn();
         }
@@ -2580,6 +2781,7 @@ fn update_wall_turrets(
                     velocity: Vec2::new(turret.facing * 205.0, 0.0),
                     is_arcane: false,
                     is_magma_wave: false,
+                    is_cryo_wave: false,
                 },
                 Hitbox {
                     owner: entity,
@@ -2623,8 +2825,10 @@ fn advance_turret_projectiles(
 
         let p = tf.translation.truncate();
         let hit_wall = solid_list.iter().any(|rect| {
-            // Ground-skimming magma waves ignore floor decks underneath them, only stopping at walls/gates
-            if proj.is_magma_wave && rect.half_extents.x > rect.half_extents.y * 1.4 {
+            // Ground-skimming magma & cryo frost waves ignore floor decks underneath them, only stopping at walls/gates
+            if (proj.is_magma_wave || proj.is_cryo_wave)
+                && rect.half_extents.x > rect.half_extents.y * 1.4
+            {
                 return false;
             }
             let min = rect.min();

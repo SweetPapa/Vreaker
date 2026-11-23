@@ -423,6 +423,9 @@ fn play_movement_sfx(
             MovementFxKind::Taunt => {
                 play_sfx(&mut commands, &sfx.boost_pad, vol * 0.7);
             }
+            MovementFxKind::DiamondSwitch => {
+                play_sfx(&mut commands, &sfx.checkpoint, vol * 0.85);
+            }
         }
     }
 }

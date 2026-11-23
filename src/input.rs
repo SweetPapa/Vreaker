@@ -42,6 +42,8 @@ pub enum PlayerAction {
     Buster,
     SpinDash,
     Guard,
+    /// Cycle unlocked Aspect Diamond power (`R` on keyboard, `L3 / LeftThumb` on gamepad).
+    CycleDiamond,
     Taunt,
     Pause,
 }
@@ -509,6 +511,9 @@ pub fn player_input_map_for_config(cfg: &ControlConfig) -> InputMap<PlayerAction
         .with(PlayerAction::Guard, KeyCode::KeyQ)
         .with(PlayerAction::Guard, KeyCode::KeyF)
         .with(PlayerAction::Guard, KeyCode::ControlRight)
+        // Cycle unlocked Aspect Diamond power: R | L3
+        .with(PlayerAction::CycleDiamond, KeyCode::KeyR)
+        .with(PlayerAction::CycleDiamond, GamepadButton::LeftThumb)
         // Taunt / Victory Pose: Select/Back | T
         .with(PlayerAction::Taunt, GamepadButton::Select)
         .with(PlayerAction::Taunt, KeyCode::KeyT)
@@ -684,6 +689,8 @@ fn sync_raw_gamepad_state(
             GamepadButton::West,
             GamepadButton::Select,
             GamepadButton::Start,
+            GamepadButton::LeftThumb,
+            GamepadButton::RightThumb,
         ] {
             if let Some(v) = gp.get(btn) {
                 raw.buttons.insert(btn, v);

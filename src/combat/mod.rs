@@ -20,7 +20,7 @@ use crate::physics::{
 };
 use crate::player::{Player, PlayerRespawnState};
 use crate::sprite_manifest::SpriteSheetManifest;
-use crate::state::{AppState, StageRestartEvent};
+use crate::state::{AppState, AspectDiamond, CampaignState, StageRestartEvent, StageSwitchEvent};
 
 /// Maximum uncharged Buster pellets allowed on screen simultaneously per shooter (`SPEC.MD`).
 pub const MAX_UNCHARGED_BUSTER_PELLETS: usize = 3;
@@ -380,12 +380,13 @@ pub struct MeteorDiveState {
     pub elapsed: f32,
 }
 
-/// Tall sweeping plasma crescent wave launched by Neutral-B (`Breaker Crescent Wave`).
+/// Tall sweeping plasma crescent wave launched by Neutral-B (`Breaker Crescent Wave` / `Molten Forge Wave`).
 #[derive(Component, Debug, Clone, Copy)]
 pub struct BreakerWaveProjectile {
     pub owner: Entity,
     pub velocity: Vec2,
     pub facing: f32,
+    pub aspect: AspectDiamond,
 }
 
 /// Signature visual/audio combat events for directional slash arcs, shockwave rings,
@@ -733,11 +734,12 @@ fn reset_combo_and_run_timer(
 
 fn reset_combo_and_timer_on_restart(
     mut restarts: MessageReader<StageRestartEvent>,
+    mut switches: MessageReader<StageSwitchEvent>,
     mut combo: ResMut<ComboTracker>,
     mut run_timer: ResMut<StageRunTimer>,
     mut callout: ResMut<LastMoveCallout>,
 ) {
-    if restarts.read().next().is_some() {
+    if restarts.read().next().is_some() || switches.read().next().is_some() {
         *combo = ComboTracker::default();
         *run_timer = StageRunTimer::default();
         *callout = LastMoveCallout::default();
@@ -1408,6 +1410,7 @@ fn handle_player_melee_and_special(
     fixed_time: Res<Time<Fixed>>,
     frame_data: Res<FighterFrameData>,
     control_cfg: Res<ControlConfig>,
+    mut campaign: ResMut<CampaignState>,
     mut callout: ResMut<LastMoveCallout>,
     active_attached: Query<(Entity, &Hitbox), With<AttachedHitbox>>,
     mut vis_events: MessageWriter<CombatVisualEvent>,
@@ -1451,6 +1454,26 @@ fn handle_player_melee_and_special(
         hitstun,
     ) in &mut query
     {
+        // Live Aspect Diamond Cycling (`R` on keyboard, `L3` on gamepad) whenever 2+ Diamonds are unlocked!
+        if intent.cycle_diamond_just_pressed
+            && let Some(new_aspect) = campaign.cycle_diamond()
+        {
+            callout.trigger(format!("{} EQUIPPED!", new_aspect.display_name()), true);
+            move_events.write(MovementEvent {
+                entity,
+                kind: MovementFxKind::DiamondSwitch,
+                pos: body.position,
+                dir: Vec2::Y,
+            });
+            vis_events.write(CombatVisualEvent::ShockwaveRing {
+                pos: body.position + Vec2::new(0.0, 6.0),
+                max_radius: 42.0,
+                color_rgb: new_aspect.vfx_rgb(),
+            });
+        }
+        let active_diamond = campaign.active_diamond;
+        let aspect_rgb = active_diamond.vfx_rgb();
+
         // Freeze combat state transitions during Hitstop or Angel Respawn hover
         if hitstop.is_some_and(Hitstop::is_active) || respawn.is_some_and(|r| r.active) {
             continue;
@@ -1506,7 +1529,7 @@ fn handle_player_melee_and_special(
                     vis_events.write(CombatVisualEvent::CycloneSpin {
                         pos: body.position + Vec2::new(0.0, 4.0),
                         radius: 36.0,
-                        color_rgb: [0.35, 4.2, 5.4],
+                        color_rgb: aspect_rgb,
                     });
                 }
             }
@@ -1597,6 +1620,7 @@ fn handle_player_melee_and_special(
                         attacker_speed,
                         final_kind,
                         charge_ratio,
+                        active_diamond,
                         &frame_data,
                         &active_attached,
                         &mut callout,
@@ -1707,7 +1731,10 @@ fn handle_player_melee_and_special(
                 }
             } else if grounded && intent.move_axis.y > 0.40 {
                 // Grounded Up-B: Iconic 360° HURRICANE SWORD SPIN ATTACK (dual-sided, animated, ledge-clamped!)
-                let spec = resolve_move_spec(AttackKind::CycloneSpin, &frame_data);
+                let mut spec = resolve_move_spec(AttackKind::CycloneSpin, &frame_data);
+                if active_diamond == AspectDiamond::Forge {
+                    spec.damage *= 1.20;
+                }
                 if intent.move_axis.x.abs() > 0.25 {
                     body.facing = intent.move_axis.x.signum();
                 }
@@ -1731,7 +1758,7 @@ fn handle_player_melee_and_special(
                 vis_events.write(CombatVisualEvent::CycloneSpin {
                     pos: body.position + Vec2::new(0.0, 4.0),
                     radius: 38.0,
-                    color_rgb: [0.35, 4.2, 5.4],
+                    color_rgb: aspect_rgb,
                 });
                 continue;
             } else if intent.move_axis.y <= 0.40
@@ -1739,7 +1766,10 @@ fn handle_player_melee_and_special(
                 && !attack.side_special_used
             {
                 // Side-B: Plasma Blitz electric horizontal dash-slash!
-                let spec = resolve_move_spec(AttackKind::SideSpecial, &frame_data);
+                let mut spec = resolve_move_spec(AttackKind::SideSpecial, &frame_data);
+                if active_diamond == AspectDiamond::Forge {
+                    spec.damage *= 1.18;
+                }
                 let dir = intent.move_axis.x.signum();
                 body.facing = dir;
                 body.velocity.x = dir * 365.0;
@@ -1773,29 +1803,38 @@ fn handle_player_melee_and_special(
                     angle_rad: 0.0,
                     radius: 30.0,
                     heavy: true,
-                    color_rgb: [0.3, 4.0, 5.4],
+                    color_rgb: aspect_rgb,
                 });
                 continue;
             } else if grounded && intent.move_axis.y <= 0.40 && intent.move_axis.x.abs() <= 0.45 {
-                // Grounded Neutral-B: Breaker Crescent Energy Wave!
-                let spec = resolve_move_spec(AttackKind::NeutralSpecial, &frame_data);
+                // Grounded Neutral-B: Breaker Crescent Energy Wave (or Molten Forge Wave / Cryo Frost Lance!)
+                let mut spec = resolve_move_spec(AttackKind::NeutralSpecial, &frame_data);
+                let (wave_radius, wave_speed, callout_name) = match active_diamond {
+                    AspectDiamond::Rift => (20.0, 335.0, AttackKind::NeutralSpecial.display_name()),
+                    AspectDiamond::Forge => {
+                        spec.damage *= 1.25;
+                        (26.0, 315.0, "MOLTEN CLEAVE WAVE!")
+                    }
+                    AspectDiamond::Stasis => (21.0, 395.0, "FROST LANCE WAVE!"),
+                };
                 attack.active_move = Some(AttackKind::NeutralSpecial);
                 attack.active_timer = spec.active_secs;
                 attack.cooldown = spec.cooldown_secs;
-                callout.trigger(AttackKind::NeutralSpecial.display_name(), false);
+                callout.trigger(callout_name, active_diamond != AspectDiamond::Rift);
                 let origin = body.position + Vec2::new(body.facing * 24.0, 4.0);
                 commands.spawn((
                     Name::new("BreakerCrescentWave"),
                     BreakerWaveProjectile {
                         owner: entity,
-                        velocity: Vec2::new(body.facing * 335.0, 0.0),
+                        velocity: Vec2::new(body.facing * wave_speed, 0.0),
                         facing: body.facing,
+                        aspect: active_diamond,
                     },
                     Hitbox {
                         owner: entity,
                         team: *team,
                         offset: Vec2::ZERO,
-                        radius: 20.0,
+                        radius: wave_radius,
                         damage: spec.damage,
                         base_kb: spec.base_kb,
                         kb_scale: spec.kb_scale,
@@ -1803,13 +1842,13 @@ fn handle_player_melee_and_special(
                         angle_deg: spec.angle_deg,
                         attacker_speed: 0.0,
                         facing: body.facing,
-                        lifetime: Timer::from_seconds(0.85, TimerMode::Once),
+                        lifetime: Timer::from_seconds(0.88, TimerMode::Once),
                         piercing: true,
                         despawn_on_expire: true,
                         recoil_bounce_vy: None,
                         hit_entities: HashSet::new(),
                         is_charged: true,
-                        min_hitstop_frames: 4,
+                        min_hitstop_frames: if active_diamond == AspectDiamond::Forge { 5 } else { 4 },
                     },
                     Transform::from_xyz(origin.x, origin.y, 4.0),
                     Visibility::default(),
@@ -1818,9 +1857,9 @@ fn handle_player_melee_and_special(
                     pos: origin,
                     facing: body.facing,
                     angle_rad: 0.0,
-                    radius: 28.0,
+                    radius: wave_radius + 8.0,
                     heavy: true,
-                    color_rgb: [0.25, 3.8, 5.2],
+                    color_rgb: aspect_rgb,
                 });
                 continue;
             } else if !attack.up_special_used {
@@ -1863,7 +1902,7 @@ fn handle_player_melee_and_special(
                 vis_events.write(CombatVisualEvent::CycloneSpin {
                     pos: body.position + Vec2::new(0.0, 10.0),
                     radius: 30.0,
-                    color_rgb: [0.35, 3.8, 5.4],
+                    color_rgb: aspect_rgb,
                 });
                 continue;
             }
@@ -1893,6 +1932,7 @@ fn handle_player_melee_and_special(
                         attacker_speed,
                         kind,
                         0.0,
+                        active_diamond,
                         &frame_data,
                         &active_attached,
                         &mut callout,
@@ -1926,6 +1966,7 @@ fn handle_player_melee_and_special(
                         attacker_speed,
                         kind,
                         0.0,
+                        active_diamond,
                         &frame_data,
                         &active_attached,
                         &mut callout,
@@ -1962,6 +2003,7 @@ fn handle_player_melee_and_special(
                         attacker_speed,
                         kind,
                         0.0,
+                        active_diamond,
                         &frame_data,
                         &active_attached,
                         &mut callout,
@@ -2011,6 +2053,7 @@ fn handle_player_melee_and_special(
                             attacker_speed,
                             target_smash,
                             0.0,
+                            active_diamond,
                             &frame_data,
                             &active_attached,
                             &mut callout,
@@ -2053,6 +2096,7 @@ fn handle_player_melee_and_special(
                         attacker_speed,
                         kind,
                         0.0,
+                        active_diamond,
                         &frame_data,
                         &active_attached,
                         &mut callout,
@@ -2087,6 +2131,7 @@ fn handle_player_melee_and_special(
                                     attacker_speed,
                                     AttackKind::DownSmash,
                                     0.0,
+                                    active_diamond,
                                     &frame_data,
                                     &active_attached,
                                     &mut callout,
@@ -2105,6 +2150,7 @@ fn handle_player_melee_and_special(
                                 attacker_speed,
                                 AttackKind::DownTilt,
                                 0.0,
+                                active_diamond,
                                 &frame_data,
                                 &active_attached,
                                 &mut callout,
@@ -2134,6 +2180,7 @@ fn handle_player_melee_and_special(
                                     attacker_speed,
                                     AttackKind::UpSmash,
                                     0.0,
+                                    active_diamond,
                                     &frame_data,
                                     &active_attached,
                                     &mut callout,
@@ -2152,6 +2199,7 @@ fn handle_player_melee_and_special(
                                 attacker_speed,
                                 AttackKind::UpTilt,
                                 0.0,
+                                active_diamond,
                                 &frame_data,
                                 &active_attached,
                                 &mut callout,
@@ -2175,6 +2223,7 @@ fn handle_player_melee_and_special(
                             attacker_speed,
                             AttackKind::DashAttack,
                             0.0,
+                            active_diamond,
                             &frame_data,
                             &active_attached,
                             &mut callout,
@@ -2209,6 +2258,7 @@ fn handle_player_melee_and_special(
                                 attacker_speed,
                                 AttackKind::ForwardSmash,
                                 0.0,
+                                active_diamond,
                                 &frame_data,
                                 &active_attached,
                                 &mut callout,
@@ -2253,6 +2303,7 @@ fn handle_player_melee_and_special(
                             attacker_speed,
                             jab_kind,
                             0.0,
+                            active_diamond,
                             &frame_data,
                             &active_attached,
                             &mut callout,
@@ -2276,6 +2327,7 @@ fn execute_melee_attack(
     attacker_speed: f32,
     kind: AttackKind,
     charge_ratio: f32,
+    active_diamond: AspectDiamond,
     frame_data: &FighterFrameData,
     active_attached: &Query<(Entity, &Hitbox), With<AttachedHitbox>>,
     callout: &mut LastMoveCallout,
@@ -2283,6 +2335,9 @@ fn execute_melee_attack(
 ) {
     let mut spec = resolve_move_spec(kind, frame_data);
     let is_charged_smash = charge_ratio >= 0.15;
+    if active_diamond == AspectDiamond::Forge && kind.is_heavy_callout() {
+        spec.damage *= 1.18;
+    }
     if charge_ratio > 0.0 {
         spec.damage *= 1.0 + 0.55 * charge_ratio;
         spec.base_kb *= 1.0 + 0.45 * charge_ratio;
@@ -2323,20 +2378,25 @@ fn execute_melee_attack(
         });
     }
 
+    let aspect_tint = active_diamond.vfx_rgb();
     if kind == AttackKind::DownSmash {
         vis_events.write(CombatVisualEvent::CycloneSpin {
             pos: body.position + Vec2::new(0.0, -4.0),
             radius: 34.0 + charge_ratio * 8.0,
-            color_rgb: [5.0, 2.8, 0.42],
+            color_rgb: if active_diamond == AspectDiamond::Stasis {
+                aspect_tint
+            } else {
+                [5.0, 2.8, 0.42]
+            },
         });
     } else if kind == AttackKind::NeutralAir {
         vis_events.write(CombatVisualEvent::CycloneSpin {
             pos: body.position,
             radius: 26.0,
-            color_rgb: [0.4, 4.0, 5.4],
+            color_rgb: aspect_tint,
         });
     } else {
-        let (heavy, arc_angle, color_rgb) = match kind {
+        let (heavy, arc_angle, default_rgb) = match kind {
             AttackKind::ForwardSmash => (true, -0.06, [5.0, 2.8, 0.35]),
             AttackKind::Jab3 => (true, 0.04, [0.45, 4.4, 5.6]),
             AttackKind::UpSmash => (true, std::f32::consts::FRAC_PI_2, [5.2, 3.2, 0.42]),
@@ -2351,6 +2411,11 @@ fn execute_melee_attack(
             AttackKind::DashAttack => (true, -0.12, [0.38, 4.2, 5.5]),
             AttackKind::ForwardAir => (false, -0.10, [0.35, 4.0, 5.4]),
             _ => (false, 0.0, [0.35, 3.6, 5.0]),
+        };
+        let color_rgb = match active_diamond {
+            AspectDiamond::Rift => default_rgb,
+            AspectDiamond::Forge => [5.2, 2.35, 0.35],
+            AspectDiamond::Stasis => [0.45, 3.4, 5.6],
         };
         let hb_facing = body.facing * spec.hitbox_facing_sign;
         vis_events.write(CombatVisualEvent::SlashArc {
@@ -2371,6 +2436,7 @@ fn execute_melee_attack(
 fn resolve_meteor_dive_impacts(
     mut commands: Commands,
     fixed_time: Res<Time<Fixed>>,
+    campaign: Res<CampaignState>,
     active_attached: Query<(Entity, &Hitbox), With<AttachedHitbox>>,
     mut divers: Query<
         (
@@ -2386,6 +2452,12 @@ fn resolve_meteor_dive_impacts(
     mut vis_events: MessageWriter<CombatVisualEvent>,
 ) {
     let dt = fixed_time.delta_secs();
+    let is_forge = campaign.active_diamond == AspectDiamond::Forge;
+    let ring_rgb = match campaign.active_diamond {
+        AspectDiamond::Forge => [5.4, 2.2, 0.30],
+        AspectDiamond::Stasis => [0.40, 3.6, 5.6],
+        AspectDiamond::Rift => [4.8, 2.4, 0.45],
+    };
     for (entity, team, body, mut dive, mut attack, hitstun) in &mut divers {
         if !dive.active {
             continue;
@@ -2404,9 +2476,9 @@ fn resolve_meteor_dive_impacts(
                     owner: entity,
                     team: *team,
                     offset: Vec2::ZERO,
-                    radius: 56.0,
-                    damage: 14.0,
-                    base_kb: 245.0,
+                    radius: if is_forge { 68.0 } else { 56.0 },
+                    damage: if is_forge { 18.0 } else { 14.0 },
+                    base_kb: if is_forge { 265.0 } else { 245.0 },
                     kb_scale: 3.0,
                     momentum_mult: 0.0,
                     angle_deg: 70.0,
@@ -2418,15 +2490,15 @@ fn resolve_meteor_dive_impacts(
                     recoil_bounce_vy: None,
                     hit_entities: HashSet::new(),
                     is_charged: true,
-                    min_hitstop_frames: 6,
+                    min_hitstop_frames: if is_forge { 7 } else { 6 },
                 },
                 Transform::from_xyz(slam_pos.x, slam_pos.y, 2.0),
             ));
             vis_events.write(CombatVisualEvent::GroundSlam { pos: slam_pos });
             vis_events.write(CombatVisualEvent::ShockwaveRing {
                 pos: slam_pos,
-                max_radius: 62.0,
-                color_rgb: [4.8, 2.4, 0.45],
+                max_radius: if is_forge { 76.0 } else { 62.0 },
+                color_rgb: ring_rgb,
             });
         } else if body.velocity.y > -40.0
             || matches!(
@@ -2793,6 +2865,7 @@ fn sync_attached_hitboxes(
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn resolve_hitbox_hurtbox_collisions(
     mut commands: Commands,
+    campaign: Res<CampaignState>,
     mut hitboxes: Query<(Entity, &mut Hitbox, &Transform, Has<DualSidedHitbox>)>,
     mut targets: Query<(
         Entity,
@@ -2947,7 +3020,14 @@ fn resolve_hitbox_hurtbox_collisions(
             let hitstop_frames = compute_hitstop_frames(kb_mag)
                 .max(hb.min_hitstop_frames)
                 .clamp(3, 8);
-            let hitstun_secs = (0.14 + kb_mag / 1180.0).clamp(0.14, 0.80);
+            let mut hitstun_secs = (0.14 + kb_mag / 1180.0).clamp(0.14, 0.80);
+            if hb.team == Team::Player
+                && *target_team == Team::Enemy
+                && campaign.active_diamond == AspectDiamond::Stasis
+            {
+                // Stasis Diamond chill extends enemy freeze-stun cleanly!
+                hitstun_secs = (hitstun_secs * 1.25).min(0.95);
+            }
 
             target_body.velocity = kb_vec;
             target_body.ground_speed = kb_vec.x;

@@ -10,7 +10,7 @@ use bevy::prelude::*;
 
 use crate::physics::KinematicBody;
 use crate::player::Player;
-use crate::state::{AppState, StageRestartEvent};
+use crate::state::{AppState, CampaignState, StageId, StageRestartEvent, StageSwitchEvent};
 
 /// Cast speakers with matching pixel-art portraits in `assets/ui/portraits/`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -19,6 +19,7 @@ pub enum SpeakerId {
     Mina,
     Barnaby,
     Vulcanus,
+    Borealis,
 }
 
 impl SpeakerId {
@@ -28,6 +29,7 @@ impl SpeakerId {
             SpeakerId::Mina => "MINA  •  SCRAP-TECH SALVAGER",
             SpeakerId::Barnaby => "UNIT-04 'BARNABY'  •  COMMS DRONE",
             SpeakerId::Vulcanus => "IRON TITAN: VULCANUS",
+            SpeakerId::Borealis => "SUB-ZERO WARDEN: BOREALIS",
         }
     }
 
@@ -37,6 +39,7 @@ impl SpeakerId {
             SpeakerId::Mina => Color::srgb(1.0, 0.72, 0.24),
             SpeakerId::Barnaby => Color::srgb(0.32, 0.92, 0.78),
             SpeakerId::Vulcanus => Color::srgb(1.0, 0.36, 0.16),
+            SpeakerId::Borealis => Color::srgb(0.45, 0.88, 1.0),
         }
     }
 }
@@ -49,7 +52,7 @@ pub struct DialogueLine {
     pub duration_secs: f32,
 }
 
-/// Canonical Stage 1 narrative beats defined in `docs/story-bible.md`.
+/// Canonical Stage 1 & Stage 2 narrative beats defined in `docs/story-bible.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StoryBeat {
     Stage1Intro,
@@ -58,6 +61,12 @@ pub enum StoryBeat {
     Relic3Locket,
     BossVulcanusIntro,
     BossVulcanusDefeated,
+    Stage2Intro,
+    Stage2Relic1Horn,
+    Stage2Relic2Handkerchief,
+    Stage2Relic3Toy,
+    BossBorealisIntro,
+    BossBorealisDefeated,
 }
 
 /// Named Stage 1 1700s keepsakes yanked through the time rift alongside Levy.
@@ -67,7 +76,22 @@ pub const STAGE1_RELIC_NAMES: [&str; 3] = [
     "WIFE'S SILVER LOCKET",
 ];
 
-/// Classifies a Stage 1 Secret Relic world X position into keepsake index `0..=2`.
+/// Named Stage 2 1700s keepsakes frozen inside the Cryo Conduit vaults.
+pub const STAGE2_RELIC_NAMES: [&str; 3] = [
+    "WEATHERED POWDER HORN",
+    "SARAH'S HANDKERCHIEF",
+    "WOODEN CAVALRY TOY",
+];
+
+/// Returns the 3 canonical 1700s keepsake titles for a given [`StageId`].
+pub fn stage_relic_names(stage: StageId) -> &'static [&'static str; 3] {
+    match stage {
+        StageId::Stage1Foundry => &STAGE1_RELIC_NAMES,
+        StageId::Stage2Cryo => &STAGE2_RELIC_NAMES,
+    }
+}
+
+/// Classifies a Secret Relic world X position into keepsake index `0..=2`.
 pub fn stage1_relic_index_for_x(x: f32) -> usize {
     if x < 2000.0 {
         0
@@ -75,6 +99,18 @@ pub fn stage1_relic_index_for_x(x: f32) -> usize {
         1
     } else {
         2
+    }
+}
+
+/// Maps `(StageId, relic_index)` to its Story Bible keepsake beat.
+pub fn relic_beat_for_stage(stage: StageId, idx: usize) -> StoryBeat {
+    match (stage, idx) {
+        (StageId::Stage1Foundry, 0) => StoryBeat::Relic1Compass,
+        (StageId::Stage1Foundry, 1) => StoryBeat::Relic2Portrait,
+        (StageId::Stage1Foundry, _) => StoryBeat::Relic3Locket,
+        (StageId::Stage2Cryo, 0) => StoryBeat::Stage2Relic1Horn,
+        (StageId::Stage2Cryo, 1) => StoryBeat::Stage2Relic2Handkerchief,
+        (StageId::Stage2Cryo, _) => StoryBeat::Stage2Relic3Toy,
     }
 }
 
@@ -138,8 +174,68 @@ pub fn script_for_beat(beat: StoryBeat) -> &'static [DialogueLine] {
         ],
         StoryBeat::BossVulcanusDefeated => &[DialogueLine {
             speaker: SpeakerId::Mina,
-            text: "Forge Diamond secured! One down, three to go—next signal is freezing cold out in the Cryo Conduit.",
-            duration_secs: 6.0,
+            text: "Forge Diamond secured! Press R or L3 to channel Molten Cleave—next signal is freezing cold out in the Cryo Conduit.",
+            duration_secs: 6.2,
+        }],
+        // Stage 2: THE CRYO CONDUIT (Sub-zero AI server farm & liquid-nitrogen cooling towers)
+        StoryBeat::Stage2Intro => &[
+            DialogueLine {
+                speaker: SpeakerId::Mina,
+                text: "Welcome to the Cryo Conduit—2085's sub-zero AI server towers. The Stasis Diamond is locked at the core, and those mirror-ice decks are slick!",
+                duration_secs: 6.0,
+            },
+            DialogueLine {
+                speaker: SpeakerId::Barnaby,
+                text: "Tactical tip: Press R or L3 to ignite your new Forge Diamond! Its molten heat shatters Cryo Ice Bulkheads twice as fast!",
+                duration_secs: 6.0,
+            },
+            DialogueLine {
+                speaker: SpeakerId::Levy,
+                text: "Survived three winters on the frontier without a fancy metal coat. Let's crack this icebox wide open.",
+                duration_secs: 5.4,
+            },
+        ],
+        StoryBeat::Stage2Relic1Horn => &[DialogueLine {
+            speaker: SpeakerId::Levy,
+            text: "My carved powder horn—frozen solid in a 2085 server rack. Least the frost kept the timber dry.",
+            duration_secs: 6.4,
+        }],
+        StoryBeat::Stage2Relic2Handkerchief => &[DialogueLine {
+            speaker: SpeakerId::Levy,
+            text: "Sarah's stitched handkerchief... she tied it around my wrist the morning the sky tore open. Not letting go.",
+            duration_secs: 6.4,
+        }],
+        StoryBeat::Stage2Relic3Toy => &[DialogueLine {
+            speaker: SpeakerId::Levy,
+            text: "The little wooden cavalry horse I whittled for Thomas... I swear I'm bringing every piece of home back with me.",
+            duration_secs: 6.4,
+        }],
+        StoryBeat::BossBorealisIntro => &[
+            DialogueLine {
+                speaker: SpeakerId::Borealis,
+                text: "THERMAL ANOMALY BREACHED CORE SANCTUM. INITIATING ABSOLUTE-ZERO PRESERVATION PROTOCOL.",
+                duration_secs: 5.2,
+            },
+            DialogueLine {
+                speaker: SpeakerId::Levy,
+                text: "You machine folk sure love big words. Hand over that blue ice stone in your chest before I thaw you with Vulcanus's fire.",
+                duration_secs: 5.8,
+            },
+            DialogueLine {
+                speaker: SpeakerId::Borealis,
+                text: "FORGE SIGNATURE DETECTED. SUB-ZERO WARDEN BOREALIS ENGAGING. YOU WILL BE FROZEN IN TIME.",
+                duration_secs: 5.0,
+            },
+            DialogueLine {
+                speaker: SpeakerId::Levy,
+                text: "Already fell out of time once, pal—don't plan on staying frozen!",
+                duration_secs: 4.8,
+            },
+        ],
+        StoryBeat::BossBorealisDefeated => &[DialogueLine {
+            speaker: SpeakerId::Mina,
+            text: "Stasis Diamond locked in—two down, two to go! Cycle it with R/L3 to freeze foes longer. Next up: Vex-9 in the Neon Skyline!",
+            duration_secs: 6.4,
         }],
     }
 }
@@ -148,7 +244,7 @@ pub fn script_for_beat(beat: StoryBeat) -> &'static [DialogueLine] {
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StoryTriggerEvent(pub StoryBeat);
 
-/// Live headless-safe dialogue queue & Stage 1 keepsake lore tracker.
+/// Live headless-safe dialogue queue & stage keepsake lore tracker.
 #[derive(Resource, Debug, Default, Clone)]
 pub struct StoryCommsState {
     pub current: Option<DialogueLine>,
@@ -165,15 +261,20 @@ impl StoryCommsState {
             return false;
         }
         match beat {
-            StoryBeat::Relic1Compass => self.found_relics[0] = true,
-            StoryBeat::Relic2Portrait => self.found_relics[1] = true,
-            StoryBeat::Relic3Locket => self.found_relics[2] = true,
+            StoryBeat::Relic1Compass | StoryBeat::Stage2Relic1Horn => self.found_relics[0] = true,
+            StoryBeat::Relic2Portrait | StoryBeat::Stage2Relic2Handkerchief => {
+                self.found_relics[1] = true
+            }
+            StoryBeat::Relic3Locket | StoryBeat::Stage2Relic3Toy => self.found_relics[2] = true,
             _ => {}
         }
         // High-priority Boss confrontation replaces any lingering chatter cleanly.
         if matches!(
             beat,
-            StoryBeat::BossVulcanusIntro | StoryBeat::BossVulcanusDefeated
+            StoryBeat::BossVulcanusIntro
+                | StoryBeat::BossVulcanusDefeated
+                | StoryBeat::BossBorealisIntro
+                | StoryBeat::BossBorealisDefeated
         ) {
             self.current = None;
             self.queue.clear();
@@ -242,8 +343,8 @@ impl Plugin for StoryPlugin {
         app.init_resource::<StoryCommsState>()
             .add_message::<StoryTriggerEvent>()
             .add_systems(OnEnter(AppState::Title), reset_story_on_title)
-            .add_systems(OnEnter(AppState::Playing), trigger_stage1_intro_once)
-            .add_systems(Update, reset_story_on_stage_restart)
+            .add_systems(OnEnter(AppState::Playing), trigger_stage_intro_once)
+            .add_systems(Update, reset_story_on_stage_restart_or_switch)
             .add_systems(
                 FixedUpdate,
                 (
@@ -261,22 +362,36 @@ impl Plugin for StoryPlugin {
     }
 }
 
+fn intro_beat_for_stage(stage: StageId) -> StoryBeat {
+    match stage {
+        StageId::Stage1Foundry => StoryBeat::Stage1Intro,
+        StageId::Stage2Cryo => StoryBeat::Stage2Intro,
+    }
+}
+
 fn reset_story_on_title(mut comms: ResMut<StoryCommsState>) {
     comms.reset();
 }
 
-fn reset_story_on_stage_restart(
+fn reset_story_on_stage_restart_or_switch(
     mut restarts: MessageReader<StageRestartEvent>,
+    mut switches: MessageReader<StageSwitchEvent>,
+    campaign: Res<CampaignState>,
     mut comms: ResMut<StoryCommsState>,
 ) {
-    if restarts.read().next().is_some() {
+    let switched = switches.read().last().map(|ev| ev.0);
+    let restarted = restarts.read().next().is_some();
+    if let Some(stage) = switched {
         comms.reset();
-        comms.trigger(StoryBeat::Stage1Intro);
+        comms.trigger(intro_beat_for_stage(stage));
+    } else if restarted {
+        comms.reset();
+        comms.trigger(intro_beat_for_stage(campaign.active_stage));
     }
 }
 
-fn trigger_stage1_intro_once(mut comms: ResMut<StoryCommsState>) {
-    comms.trigger(StoryBeat::Stage1Intro);
+fn trigger_stage_intro_once(campaign: Res<CampaignState>, mut comms: ResMut<StoryCommsState>) {
+    comms.trigger(intro_beat_for_stage(campaign.active_stage));
 }
 
 fn process_story_trigger_events(
@@ -288,8 +403,9 @@ fn process_story_trigger_events(
     }
 }
 
-/// Fires the verbatim Vulcanus confrontation as Levy steps onto the Sector 8 Sanctum threshold.
+/// Fires the stage Boss confrontation as Levy steps onto the Sector 8 Sanctum threshold.
 fn detect_sanctum_boss_comms(
+    campaign: Res<CampaignState>,
     players: Query<&KinematicBody, With<Player>>,
     mut comms: ResMut<StoryCommsState>,
 ) {
@@ -297,7 +413,11 @@ fn detect_sanctum_boss_comms(
         return;
     };
     if body.position.x >= 8360.0 {
-        comms.trigger(StoryBeat::BossVulcanusIntro);
+        let boss_beat = match campaign.active_stage {
+            StageId::Stage1Foundry => StoryBeat::BossVulcanusIntro,
+            StageId::Stage2Cryo => StoryBeat::BossBorealisIntro,
+        };
+        comms.trigger(boss_beat);
     }
 }
 

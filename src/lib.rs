@@ -4578,4 +4578,287 @@ SpriteSheetManifest(
             );
         }
     }
+
+    #[test]
+    fn test_stage2_cryo_conduit_ldtk_assets_and_borealis_sprites_exist() {
+        use std::path::Path;
+        use crate::sprite_manifest::SpriteSheetManifest;
+
+        // 1. Stage 2 LDtk level file exists & contains Borealis boss + icy decks + 3 keepsake relics
+        let ldtk_raw = std::fs::read_to_string("assets/levels/cryo_conduit.ldtk")
+            .expect("assets/levels/cryo_conduit.ldtk must exist");
+        assert!(ldtk_raw.contains("borealis_boss"), "Stage 2 LDtk must contain borealis_boss encounter");
+        assert!(ldtk_raw.contains("cryo_server_farm"), "Stage 2 LDtk must contain cryo_server_farm ambush");
+        assert!(ldtk_raw.contains("cryo_vault"), "Stage 2 LDtk must contain cryo_vault ambush");
+        assert!(ldtk_raw.contains("\"__identifier\": \"icy\""), "Stage 2 LDtk must declare icy surface fields");
+        assert!(ldtk_raw.contains("SUB-ZERO WARDEN: BOREALIS"));
+
+        // 2. All 18 Cryo Conduit environment textures exist on disk
+        for tex in [
+            "cryo_bg_far.png",
+            "cryo_bg_mid.png",
+            "cryo_bg_near.png",
+            "cryo_tile_metal.png",
+            "cryo_tile_trim_top.png",
+            "cryo_tile_ice_top.png",
+            "cryo_tile_wall.png",
+            "cryo_platform_oneway.png",
+            "cryo_platform_moving.png",
+            "cryo_breakable_wall.png",
+            "cryo_boost_pad.png",
+            "cryo_jump_pad.png",
+            "cryo_spikes.png",
+            "cryo_turret.png",
+            "cryo_checkpoint.png",
+            "cryo_lava_strip.png",
+            "cryo_molten_cascade.png",
+            "cryo_lamp_fixture.png",
+        ] {
+            let p = Path::new("assets/textures/cryo").join(tex);
+            assert!(p.exists(), "Expected Stage 2 Cryo texture at {}", p.display());
+            assert!(std::fs::metadata(&p).unwrap().len() > 80);
+        }
+
+        // 3. Borealis HUD portrait + 144x144 3-pass baked sprite sheet & manifest
+        assert!(Path::new("assets/ui/portraits/borealis.png").exists());
+        for suffix in ["borealis_diffuse.png", "borealis_normal.png", "borealis_emission.png"] {
+            let p = Path::new("assets/sprites/borealis").join(suffix);
+            assert!(p.exists(), "Expected Borealis baked sprite {}", p.display());
+        }
+        let manifest = SpriteSheetManifest::load_from_file("assets/sprites/borealis/borealis.ron")
+            .expect("Borealis sprite manifest must load");
+        assert_eq!(manifest.frame_size, (144, 144));
+        assert!(manifest.animations.len() >= 25, "Borealis must contain full combat animation roster");
+
+        // 4. Stage 2 & Borealis Boss OGG music tracks exist
+        for track in ["stage2_theme.ogg", "boss_borealis.ogg"] {
+            let p = Path::new("assets/audio/music").join(track);
+            assert!(p.exists(), "Expected Stage 2 BGM at {}", p.display());
+            assert!(std::fs::metadata(&p).unwrap().len() > 10_000);
+        }
+    }
+
+    #[test]
+    fn test_ice_surface_low_friction_slide_and_higher_sprint_speed() {
+        use crate::physics::{IceSurface, KinematicBody, MovementState, PlayerIntent, SolidRect};
+
+        let run_slide = |icy: bool| -> (bool, f32, f32) {
+            let (mut app, player) = physics_test_app(Vec2::new(0.0, 20.0));
+            let mut floor = app.world_mut().spawn(SolidRect::from_min_max(
+                Vec2::new(-100.0, -32.0),
+                Vec2::new(1400.0, 0.0),
+            ));
+            if icy {
+                floor.insert(IceSurface);
+            }
+            // Settle onto ground
+            step_fixed_ticks(&mut app, 6);
+            // Run right for 30 ticks
+            {
+                let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+                intent.move_axis = Vec2::new(1.0, 0.0);
+                intent.boost_held = true;
+            }
+            step_fixed_ticks(&mut app, 35);
+            let peak_speed = app.world().get::<KinematicBody>(player).unwrap().speed();
+            let on_ice = app.world().get::<KinematicBody>(player).unwrap().on_ice;
+            let release_x = app.world().get::<KinematicBody>(player).unwrap().position.x;
+
+            // Release stick and measure glide distance over 20 ticks
+            {
+                let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+                intent.move_axis = Vec2::ZERO;
+                intent.boost_held = false;
+            }
+            step_fixed_ticks(&mut app, 20);
+            let body = app.world().get::<KinematicBody>(player).unwrap();
+            assert_eq!(body.state, MovementState::Grounded);
+            (on_ice, peak_speed, body.position.x - release_x)
+        };
+
+        let (norm_ice, _norm_peak, norm_glide) = run_slide(false);
+        let (icy_flag, _icy_peak, icy_glide) = run_slide(true);
+        assert!(!norm_ice, "Regular iron deck must report on_ice=false");
+        assert!(icy_flag, "Mirror-Ice deck must report on_ice=true");
+        assert!(
+            icy_glide > norm_glide * 1.45,
+            "Mirror-Ice must produce noticeably longer low-friction slides (ice={icy_glide:.1}px vs normal={norm_glide:.1}px)"
+        );
+    }
+
+    #[test]
+    fn test_aspect_diamond_unlock_cycling_and_forge_thermal_melt_2x() {
+        use crate::combat::CombatHitEvent;
+        use crate::enemies::spawn_breakable_wall;
+        use crate::physics::{BreakableWall, PlayerIntent};
+        use crate::state::{AspectDiamond, CampaignState, StageId};
+
+        let mut app = headless_test_app();
+        app.world_mut().write_message(GameStateCommand::StartGame);
+        app.update();
+
+        // Fresh Stage 1 starts with Rift only
+        {
+            let camp = app.world().resource::<CampaignState>();
+            assert_eq!(camp.active_stage, StageId::Stage1Foundry);
+            assert_eq!(camp.active_diamond, AspectDiamond::Rift);
+            assert!(camp.is_diamond_unlocked(AspectDiamond::Rift));
+            assert!(!camp.is_diamond_unlocked(AspectDiamond::Forge));
+            assert!(!camp.is_diamond_unlocked(AspectDiamond::Stasis));
+        }
+
+        // Clearing Stage 1 unlocks Forge Diamond!
+        app.world_mut().write_message(GameStateCommand::StageCleared);
+        app.update();
+        assert!(
+            app.world()
+                .resource::<CampaignState>()
+                .is_diamond_unlocked(AspectDiamond::Forge)
+        );
+
+        // Enter Playing and press CycleDiamond -> swaps Rift -> Forge!
+        app.world_mut().write_message(GameStateCommand::StartGame);
+        app.update();
+        let player = app
+            .world_mut()
+            .query_filtered::<Entity, With<crate::player::Player>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut()
+            .entity_mut(player)
+            .insert(crate::physics::ManualPlayerIntent);
+        app.world_mut()
+            .get_mut::<PlayerIntent>(player)
+            .unwrap()
+            .cycle_diamond_just_pressed = true;
+        step_fixed_ticks(&mut app, 1);
+        app.world_mut()
+            .get_mut::<PlayerIntent>(player)
+            .unwrap()
+            .cycle_diamond_just_pressed = false;
+        assert_eq!(
+            app.world().resource::<CampaignState>().active_diamond,
+            AspectDiamond::Forge
+        );
+
+        // Verify Forge Diamond deals 2.0x thermal shatter damage to BreakableWall!
+        let wall = {
+            let mut cmds = app.world_mut().commands();
+            spawn_breakable_wall(&mut cmds, Vec2::new(300.0, 20.0), Vec2::new(28.0, 72.0), 40.0)
+        };
+        app.update();
+        app.world_mut().write_message(CombatHitEvent {
+            attacker: player,
+            target: wall,
+            hit_pos: Vec2::new(300.0, 20.0),
+            damage: 10.0,
+            target_percent_after: 10.0,
+            knockback_mag: 150.0,
+            knockback_vec: Vec2::new(150.0, 0.0),
+            hitstop_frames: 4,
+            is_charged: false,
+        });
+        step_fixed_ticks(&mut app, 1);
+        let remaining_hp = app.world().get::<BreakableWall>(wall).unwrap().hp;
+        assert!(
+            (remaining_hp - 20.0).abs() < 0.01,
+            "Forge Diamond must deal 2.0x damage (20 dmg) to 40 HP bulkhead, leaving 20 HP (got {remaining_hp})"
+        );
+    }
+
+    #[test]
+    fn test_stage2_select_borealis_boss_story_and_music() {
+        use crate::audio::music::{MusicTrackId, resolve_desired_track_for_stage};
+        use crate::combat::CombatHitEvent;
+        use crate::enemies::{BossState, EncounterStatus, EnemyArchetype, EnemyHealth, spawn_cryo_boss};
+        use crate::state::{AspectDiamond, CampaignState, StageId, StageSwitchEvent};
+        use crate::story::{SpeakerId, StoryBeat, StoryCommsState, script_for_beat, stage_relic_names};
+
+        let mut app = headless_test_app();
+
+        // Select Stage 2 directly from Title -> enters Playing, switches stage, auto-equips Forge!
+        app.world_mut()
+            .write_message(GameStateCommand::SelectStageAndPlay(StageId::Stage2Cryo));
+        app.update();
+        assert_eq!(
+            *app.world().resource::<State<AppState>>().get(),
+            AppState::Playing
+        );
+        {
+            let camp = app.world().resource::<CampaignState>();
+            assert_eq!(camp.active_stage, StageId::Stage2Cryo);
+            assert_eq!(camp.active_diamond, AspectDiamond::Forge);
+            assert!(camp.is_diamond_unlocked(AspectDiamond::Forge));
+        }
+
+        // Story Bible Stage 2 intro & keepsakes
+        assert_eq!(stage_relic_names(StageId::Stage2Cryo).len(), 3);
+        assert!(
+            script_for_beat(StoryBeat::BossBorealisIntro)
+                .iter()
+                .any(|l| l.speaker == SpeakerId::Borealis)
+        );
+        let comms = app.world().resource::<StoryCommsState>();
+        assert!(
+            comms.triggered.contains(&StoryBeat::Stage2Intro),
+            "Entering Stage 2 must automatically queue Stage2Intro comms!"
+        );
+
+        // Stage 2 & Borealis Boss music resolution
+        let mut enc = EncounterStatus::default();
+        assert_eq!(
+            resolve_desired_track_for_stage(AppState::Playing, StageId::Stage2Cryo, &enc, None),
+            Some(MusicTrackId::Stage2)
+        );
+        enc.is_boss = true;
+        enc.active_title = Some("SUB-ZERO WARDEN: BOREALIS".to_string());
+        assert_eq!(
+            resolve_desired_track_for_stage(AppState::Playing, StageId::Stage2Cryo, &enc, None),
+            Some(MusicTrackId::BossBorealis)
+        );
+
+        // Spawn Borealis Boss and verify Phase 2 Absolute Zero Overdrive triggers at <= 55% HP!
+        let borealis = {
+            let mut cmds = app.world_mut().commands();
+            spawn_cryo_boss(&mut cmds, Vec2::new(9000.0, 260.0), 8540.0, 9220.0)
+        };
+        app.update();
+        assert_eq!(
+            app.world().get::<EnemyHealth>(borealis).unwrap().max,
+            EnemyArchetype::CryoBoss.max_hp()
+        );
+        let player = app
+            .world_mut()
+            .query_filtered::<Entity, With<crate::player::Player>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut().write_message(CombatHitEvent {
+            attacker: player,
+            target: borealis,
+            hit_pos: Vec2::new(9000.0, 260.0),
+            damage: 140.0, // drops 280 HP -> 140 HP (50% <= 55%)
+            target_percent_after: 140.0,
+            knockback_mag: 220.0,
+            knockback_vec: Vec2::new(220.0, 60.0),
+            hitstop_frames: 6,
+            is_charged: true,
+        });
+        step_fixed_ticks(&mut app, 1);
+        assert_eq!(
+            app.world().get::<BossState>(borealis).unwrap().phase,
+            2,
+            "Borealis must enter Phase 2 Absolute Zero Overdrive at <= 55% HP"
+        );
+
+        // Clearing Stage 2 unlocks the Stasis Diamond!
+        app.world_mut().write_message(GameStateCommand::StageCleared);
+        app.update();
+        assert!(
+            app.world()
+                .resource::<CampaignState>()
+                .is_diamond_unlocked(AspectDiamond::Stasis),
+            "Clearing Stage 2 must unlock the Stasis Diamond!"
+        );
+        let _ = StageSwitchEvent(StageId::Stage1Foundry);
+    }
 }

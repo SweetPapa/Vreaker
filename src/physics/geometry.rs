@@ -14,6 +14,11 @@ pub struct SolidRect {
     pub half_extents: Vec2,
 }
 
+/// Marker identifying a low-friction Mirror-Ice solid deck or cryo slope (`Stage 2: Cryo Conduit`),
+/// granting silky Smash momentum slides, faster sprint ceilings, and accelerated downhill slopes!
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IceSurface;
+
 impl SolidRect {
     pub fn new(center: Vec2, size: Vec2) -> Self {
         Self {
@@ -368,6 +373,7 @@ pub struct GroundHit {
     pub normal: Vec2,
     pub is_one_way: bool,
     pub is_slope: bool,
+    pub is_ice: bool,
 }
 
 /// Casts dual downward ground sensors from left/right foot bounds against solid blocks,
@@ -382,6 +388,37 @@ pub fn cast_dual_foot_sensors(
     drop_through_active: bool,
     solids: &[SolidRect],
     slopes: &[SlopeSegment],
+    one_ways: &[OneWayPlatform],
+) -> Option<GroundHit> {
+    cast_dual_foot_sensors_with_ice(
+        pos,
+        half_extents,
+        prev_feet_y,
+        vel_y,
+        was_grounded,
+        drop_through_active,
+        solids,
+        &[],
+        slopes,
+        &[],
+        one_ways,
+    )
+}
+
+/// Extended dual downward ground-sensor cast tracking whether the landed solid or slope
+/// carries the low-friction [`IceSurface`] surface property.
+#[allow(clippy::too_many_arguments)]
+pub fn cast_dual_foot_sensors_with_ice(
+    pos: Vec2,
+    half_extents: Vec2,
+    prev_feet_y: f32,
+    vel_y: f32,
+    was_grounded: bool,
+    drop_through_active: bool,
+    solids: &[SolidRect],
+    solid_ice: &[bool],
+    slopes: &[SlopeSegment],
+    slope_ice: &[bool],
     one_ways: &[OneWayPlatform],
 ) -> Option<GroundHit> {
     let feet_y = pos.y - half_extents.y;
@@ -415,7 +452,7 @@ pub fn cast_dual_foot_sensors(
 
     for &fx in &foot_xs {
         // 1. Solid AABB top faces
-        for rect in solids {
+        for (idx, rect) in solids.iter().enumerate() {
             let min = rect.min();
             let max = rect.max();
             if fx >= min.x && fx <= max.x {
@@ -427,13 +464,14 @@ pub fn cast_dual_foot_sensors(
                         normal: Vec2::Y,
                         is_one_way: false,
                         is_slope: false,
+                        is_ice: solid_ice.get(idx).copied().unwrap_or(false),
                     });
                 }
             }
         }
 
         // 2. Walkable slope segments (up to 45°)
-        for slope in slopes {
+        for (idx, slope) in slopes.iter().enumerate() {
             let normal = slope.normal();
             if normal.y < MAX_WALKABLE_SLOPE_COS - 1e-3 {
                 continue;
@@ -446,6 +484,7 @@ pub fn cast_dual_foot_sensors(
                     normal,
                     is_one_way: false,
                     is_slope: true,
+                    is_ice: slope_ice.get(idx).copied().unwrap_or(false),
                 });
             }
         }
@@ -461,6 +500,7 @@ pub fn cast_dual_foot_sensors(
                             normal: Vec2::Y,
                             is_one_way: true,
                             is_slope: false,
+                            is_ice: false,
                         });
                     }
                 }

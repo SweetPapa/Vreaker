@@ -14,7 +14,7 @@ use crate::combat::{
 use crate::enemies::{BlastEdge, BlastZone, BlastZoneKoEvent, EncounterStatus, PlayerCheckpoint};
 use crate::input::{ControlConfig, PlayerAction, player_input_map_for_config};
 use crate::physics::{KinematicBody, MovementState, PhysicsSystems, PlayerIntent};
-use crate::state::{AppState, StageRestartEvent};
+use crate::state::{AppState, StageRestartEvent, StageSwitchEvent};
 
 /// Default player spawn center in *"The Foundry Gym"* (Zone A warmup deck).
 pub const DEFAULT_PLAYER_SPAWN: Vec2 = Vec2::new(-230.0, 20.0);
@@ -219,6 +219,7 @@ fn reset_player_to_spawn(
 fn reset_player_on_stage_restart(
     mut commands: Commands,
     mut restarts: MessageReader<StageRestartEvent>,
+    mut switches: MessageReader<StageSwitchEvent>,
     spawn_point: Res<PlayerSpawnPoint>,
     mut players: Query<
         (
@@ -239,7 +240,8 @@ fn reset_player_on_stage_restart(
         With<Player>,
     >,
 ) {
-    if restarts.read().next().is_some() {
+    let triggered = restarts.read().next().is_some() || switches.read().next().is_some();
+    if triggered {
         apply_player_reset(&mut commands, spawn_point.0, &mut players);
     }
 }

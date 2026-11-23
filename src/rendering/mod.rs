@@ -33,7 +33,7 @@ use crate::enemies::{
 };
 use crate::physics::{
     BoostPad, BreakableWall, CheckpointBeacon, CollectibleItem, CollectibleKind, HazardBeamPhase,
-    JumpPad, KinematicBody, LoopSpline, MovementEvent, MovementFxKind, MovementState,
+    IceSurface, JumpPad, KinematicBody, LoopSpline, MovementEvent, MovementFxKind, MovementState,
     MovingPlatform, OneWayPlatform, PhysicsConfig, SlopeSegment, SolidRect, SpikeHazard,
     TimedHazardBeam,
 };
@@ -42,7 +42,10 @@ use crate::player::{
     PlayerSpriteVisual, RespawnAngelPlatformVisual,
 };
 use crate::sprite_manifest::SpriteSheetManifest;
-use crate::state::{AppState, StageRestartEvent};
+use crate::state::{
+    AppState, AspectDiamond, CampaignState, StageId, StageRestartEvent, StageSwitchEvent,
+    StageWorldEntity,
+};
 
 pub use sprite_lit::{
     MAX_POINT_LIGHTS_2D, PointLight2d, SpriteLitMaterial, SpriteLitUniform, SpriteSheetAnimator,
@@ -126,6 +129,34 @@ struct FoundryArtAssets {
     lamp_fixture: Option<Handle<Image>>,
 }
 
+/// Cached Stage 2 Cryo Conduit pixel-art environment textures loaded from `assets/textures/cryo/`.
+#[derive(Resource, Debug, Default, Clone)]
+struct CryoArtAssets {
+    bg_far: Option<Handle<Image>>,
+    bg_mid: Option<Handle<Image>>,
+    bg_near: Option<Handle<Image>>,
+    tile_metal: Option<Handle<Image>>,
+    tile_trim_top: Option<Handle<Image>>,
+    tile_ice_top: Option<Handle<Image>>,
+    tile_wall: Option<Handle<Image>>,
+    platform_oneway: Option<Handle<Image>>,
+    platform_moving: Option<Handle<Image>>,
+    breakable_wall: Option<Handle<Image>>,
+    boost_pad: Option<Handle<Image>>,
+    jump_pad: Option<Handle<Image>>,
+    spikes: Option<Handle<Image>>,
+    turret: Option<Handle<Image>>,
+    checkpoint: Option<Handle<Image>>,
+    lava_strip: Option<Handle<Image>>,
+    molten_cascade: Option<Handle<Image>>,
+    lamp_fixture: Option<Handle<Image>>,
+}
+
+/// Marker attached to all stage-biome parallax, horizon, cascade, and overhead lamp entities
+/// so switching between Stage 1 (Iron Foundry) and Stage 2 (Cryo Conduit) hot-swaps them cleanly.
+#[derive(Component, Debug, Default)]
+struct StageBackdropEntity;
+
 /// Sculpted 32-bit pixel-art VFX textures loaded gracefully from `assets/textures/vfx/`.
 #[derive(Resource, Debug, Default, Clone)]
 struct VfxArtAssets {
@@ -143,12 +174,13 @@ struct VfxArtAssets {
     p1_marker: Option<Handle<Image>>,
 }
 
-/// Animated pulsing molten lava & pouring liquid-metal furnace backdrop props.
+/// Animated pulsing molten lava / liquid-nitrogen horizon & pouring backdrop cascades.
 #[derive(Component, Debug, Clone, Copy)]
 struct MoltenFlowVisual {
     base_pos: Vec2,
     phase: f32,
     is_lava_horizon: bool,
+    is_cryo: bool,
 }
 
 /// Subtle ground contact shadow oval anchoring grounded fighters visually to platforms.
@@ -386,6 +418,7 @@ impl Plugin for RenderingPlugin {
             Material2dPlugin::<VfxEnergyMaterial>::default(),
         ))
             .init_resource::<FoundryArtAssets>()
+            .init_resource::<CryoArtAssets>()
             .init_resource::<VfxArtAssets>()
             .init_resource::<CameraShake>()
             .init_resource::<LastVisualAttack>()
@@ -405,6 +438,7 @@ impl Plugin for RenderingPlugin {
             .add_systems(
                 Update,
                 (
+                    swap_stage_backdrop_on_switch,
                     decorate_added_player,
                     decorate_added_solids,
                     decorate_added_lockdown_gates,
@@ -495,6 +529,7 @@ fn load_nearest_texture_if_exists(
 fn load_foundry_art_assets(
     asset_server: Res<AssetServer>,
     mut foundry: ResMut<FoundryArtAssets>,
+    mut cryo: ResMut<CryoArtAssets>,
     mut vfx: ResMut<VfxArtAssets>,
 ) {
     foundry.bg_far =
@@ -545,6 +580,39 @@ fn load_foundry_art_assets(
     );
     foundry.lamp_fixture =
         load_nearest_texture_if_exists(&asset_server, "textures/foundry/foundry_lamp_fixture.png");
+
+    // Stage 2: Cryo Conduit pixel-art environment textures
+    cryo.bg_far = load_nearest_texture_if_exists(&asset_server, "textures/cryo/cryo_bg_far.png");
+    cryo.bg_mid = load_nearest_texture_if_exists(&asset_server, "textures/cryo/cryo_bg_mid.png");
+    cryo.bg_near = load_nearest_texture_if_exists(&asset_server, "textures/cryo/cryo_bg_near.png");
+    cryo.tile_metal =
+        load_nearest_texture_if_exists(&asset_server, "textures/cryo/cryo_tile_metal.png");
+    cryo.tile_trim_top =
+        load_nearest_texture_if_exists(&asset_server, "textures/cryo/cryo_tile_trim_top.png");
+    cryo.tile_ice_top =
+        load_nearest_texture_if_exists(&asset_server, "textures/cryo/cryo_tile_ice_top.png");
+    cryo.tile_wall =
+        load_nearest_texture_if_exists(&asset_server, "textures/cryo/cryo_tile_wall.png");
+    cryo.platform_oneway =
+        load_nearest_texture_if_exists(&asset_server, "textures/cryo/cryo_platform_oneway.png");
+    cryo.platform_moving =
+        load_nearest_texture_if_exists(&asset_server, "textures/cryo/cryo_platform_moving.png");
+    cryo.breakable_wall =
+        load_nearest_texture_if_exists(&asset_server, "textures/cryo/cryo_breakable_wall.png");
+    cryo.boost_pad =
+        load_nearest_texture_if_exists(&asset_server, "textures/cryo/cryo_boost_pad.png");
+    cryo.jump_pad =
+        load_nearest_texture_if_exists(&asset_server, "textures/cryo/cryo_jump_pad.png");
+    cryo.spikes = load_nearest_texture_if_exists(&asset_server, "textures/cryo/cryo_spikes.png");
+    cryo.turret = load_nearest_texture_if_exists(&asset_server, "textures/cryo/cryo_turret.png");
+    cryo.checkpoint =
+        load_nearest_texture_if_exists(&asset_server, "textures/cryo/cryo_checkpoint.png");
+    cryo.lava_strip =
+        load_nearest_texture_if_exists(&asset_server, "textures/cryo/cryo_lava_strip.png");
+    cryo.molten_cascade =
+        load_nearest_texture_if_exists(&asset_server, "textures/cryo/cryo_molten_cascade.png");
+    cryo.lamp_fixture =
+        load_nearest_texture_if_exists(&asset_server, "textures/cryo/cryo_lamp_fixture.png");
 
     // Sculpted 32-bit pixel-art VFX textures
     vfx.buster_pellet =
@@ -688,21 +756,55 @@ fn sync_canvas_integer_scale(
     }
 }
 
-fn spawn_foundry_backdrop(
-    mut commands: Commands,
-    foundry: Res<FoundryArtAssets>,
-    vfx: Res<VfxArtAssets>,
-    shared_quad: Res<SharedVfxQuadMesh>,
-    mut vfx_materials: ResMut<Assets<VfxEnergyMaterial>>,
+fn spawn_stage_biome_backdrop(
+    commands: &mut Commands,
+    stage: StageId,
+    foundry: &FoundryArtAssets,
+    cryo: &CryoArtAssets,
+    shared_quad: &SharedVfxQuadMesh,
+    vfx_materials: &mut Assets<VfxEnergyMaterial>,
 ) {
     let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
+    let is_cryo = stage == StageId::Stage2Cryo;
 
-    // Spawn seamless 3-tile parallax Foundry cavern layers when local WARLOCK textures are present;
-    // otherwise fall back gracefully to the crisp geometric blueprint grid.
-    if let Some(ref bg_far) = foundry.bg_far {
+    let bg_far = if is_cryo {
+        cryo.bg_far.as_ref().or(foundry.bg_far.as_ref())
+    } else {
+        foundry.bg_far.as_ref()
+    };
+    let bg_mid = if is_cryo {
+        cryo.bg_mid.as_ref().or(foundry.bg_mid.as_ref())
+    } else {
+        foundry.bg_mid.as_ref()
+    };
+    let bg_near = if is_cryo {
+        cryo.bg_near.as_ref().or(foundry.bg_near.as_ref())
+    } else {
+        foundry.bg_near.as_ref()
+    };
+    let horizon_strip = if is_cryo {
+        cryo.lava_strip.as_ref().or(foundry.lava_strip.as_ref())
+    } else {
+        foundry.lava_strip.as_ref()
+    };
+    let cascade_img = if is_cryo {
+        cryo.molten_cascade
+            .as_ref()
+            .or(foundry.molten_cascade.as_ref())
+    } else {
+        foundry.molten_cascade.as_ref()
+    };
+    let lamp_hood = if is_cryo {
+        cryo.lamp_fixture.as_ref().or(foundry.lamp_fixture.as_ref())
+    } else {
+        foundry.lamp_fixture.as_ref()
+    };
+
+    if let Some(bg_far) = bg_far {
         for tile_index in -1..=1 {
             commands.spawn((
-                Name::new(format!("FoundryParallaxFar_{tile_index}")),
+                Name::new(format!("StageParallaxFar_{tile_index}")),
+                StageBackdropEntity,
                 ParallaxLayer {
                     factor_x: 0.18,
                     factor_y: 0.08,
@@ -712,7 +814,11 @@ fn spawn_foundry_backdrop(
                 },
                 Sprite {
                     image: bg_far.clone(),
-                    color: Color::srgba(0.72, 0.76, 0.88, 1.0),
+                    color: if is_cryo {
+                        Color::srgba(0.68, 0.78, 0.90, 1.0)
+                    } else {
+                        Color::srgba(0.72, 0.76, 0.88, 1.0)
+                    },
                     custom_size: Some(Vec2::new(VIRTUAL_WIDTH as f32, VIRTUAL_HEIGHT as f32)),
                     ..default()
                 },
@@ -724,6 +830,7 @@ fn spawn_foundry_backdrop(
         let grid_color = Color::srgb(0.06, 0.09, 0.14);
         for x in (-448..=1920).step_by(64) {
             commands.spawn((
+                StageBackdropEntity,
                 Sprite {
                     color: grid_color,
                     custom_size: Some(Vec2::new(1.0, 1080.0)),
@@ -735,6 +842,7 @@ fn spawn_foundry_backdrop(
         }
         for y in (-256..=640).step_by(64) {
             commands.spawn((
+                StageBackdropEntity,
                 Sprite {
                     color: grid_color,
                     custom_size: Some(Vec2::new(2400.0, 1.0)),
@@ -746,10 +854,11 @@ fn spawn_foundry_backdrop(
         }
     }
 
-    if let Some(ref bg_mid) = foundry.bg_mid {
+    if let Some(bg_mid) = bg_mid {
         for tile_index in -1..=1 {
             commands.spawn((
-                Name::new(format!("FoundryParallaxMid_{tile_index}")),
+                Name::new(format!("StageParallaxMid_{tile_index}")),
+                StageBackdropEntity,
                 ParallaxLayer {
                     factor_x: 0.42,
                     factor_y: 0.18,
@@ -759,7 +868,11 @@ fn spawn_foundry_backdrop(
                 },
                 Sprite {
                     image: bg_mid.clone(),
-                    color: Color::srgba(0.74, 0.78, 0.88, 0.92),
+                    color: if is_cryo {
+                        Color::srgba(0.70, 0.82, 0.92, 0.90)
+                    } else {
+                        Color::srgba(0.74, 0.78, 0.88, 0.92)
+                    },
                     custom_size: Some(Vec2::new(VIRTUAL_WIDTH as f32, VIRTUAL_HEIGHT as f32)),
                     ..default()
                 },
@@ -769,10 +882,11 @@ fn spawn_foundry_backdrop(
         }
     }
 
-    if let Some(ref bg_near) = foundry.bg_near {
+    if let Some(bg_near) = bg_near {
         for tile_index in -1..=1 {
             commands.spawn((
-                Name::new(format!("FoundryParallaxNear_{tile_index}")),
+                Name::new(format!("StageParallaxNear_{tile_index}")),
+                StageBackdropEntity,
                 ParallaxLayer {
                     factor_x: 0.68,
                     factor_y: 0.26,
@@ -782,7 +896,11 @@ fn spawn_foundry_backdrop(
                 },
                 Sprite {
                     image: bg_near.clone(),
-                    color: Color::srgba(0.60, 0.65, 0.78, 0.74),
+                    color: if is_cryo {
+                        Color::srgba(0.62, 0.74, 0.88, 0.74)
+                    } else {
+                        Color::srgba(0.60, 0.65, 0.78, 0.74)
+                    },
                     custom_size: Some(Vec2::new(VIRTUAL_WIDTH as f32, VIRTUAL_HEIGHT as f32)),
                     ..default()
                 },
@@ -792,19 +910,30 @@ fn spawn_foundry_backdrop(
         }
     }
 
-    // Dimmed, desaturated background boiling molten slag horizon stretching across the 10,000px abyss
-    // (kept strictly below HDR bloom threshold so foreground platforms & hazards pop cleanly!).
-    if let Some(ref lava_img) = foundry.lava_strip {
+    // Dimmed atmospheric abyss horizon: boiling molten slag (Stage 1) or chilled liquid nitrogen mist (Stage 2)
+    if let Some(lava_img) = horizon_strip {
+        let horizon_col = if is_cryo {
+            Color::srgba(0.56, 0.76, 0.92, 0.86)
+        } else {
+            Color::srgba(0.66, 0.48, 0.35, 0.90)
+        };
+        let pool_col = if is_cryo {
+            Color::srgb(0.08, 0.22, 0.38)
+        } else {
+            Color::srgb(0.44, 0.18, 0.08)
+        };
         commands.spawn((
-            Name::new("FoundryMoltenLavaHorizon"),
+            Name::new("StageAbyssHorizon"),
+            StageBackdropEntity,
             MoltenFlowVisual {
                 base_pos: Vec2::new(4500.0, -108.0),
                 phase: 0.0,
                 is_lava_horizon: true,
+                is_cryo,
             },
             Sprite {
                 image: lava_img.clone(),
-                color: Color::srgba(0.66, 0.48, 0.35, 0.90),
+                color: horizon_col,
                 custom_size: Some(Vec2::new(10400.0, 28.0)),
                 image_mode: SpriteImageMode::Tiled {
                     tile_x: true,
@@ -816,11 +945,11 @@ fn spawn_foundry_backdrop(
             Transform::from_xyz(4500.0, -108.0, -7.8),
             world_layer.clone(),
         ));
-        // Deep smoky molten under-glow pool beneath the wave crest
         commands.spawn((
-            Name::new("FoundryMoltenAbyssPool"),
+            Name::new("StageAbyssPool"),
+            StageBackdropEntity,
             Sprite {
-                color: Color::srgb(0.44, 0.18, 0.08),
+                color: pool_col,
                 custom_size: Some(Vec2::new(10400.0, 120.0)),
                 ..default()
             },
@@ -829,31 +958,36 @@ fn spawn_foundry_backdrop(
         ));
     }
 
-    // Full-height background liquid-metal smelter pours running cleanly from above the top
-    // camera ceiling (+920) all the way down into the molten slag abyss (-130), dimmed &
-    // desaturated so they read clearly as atmospheric background scenery!
-    if let Some(ref cas_img) = foundry.molten_cascade {
+    // Full-height background smelter pours (Stage 1) or liquid-nitrogen coolant waterfalls (Stage 2)
+    if let Some(cas_img) = cascade_img {
+        let cas_col = if is_cryo {
+            Color::srgba(0.52, 0.76, 0.92, 0.52)
+        } else {
+            Color::srgba(0.62, 0.46, 0.34, 0.58)
+        };
+        let cas_light = if is_cryo {
+            LinearRgba::new(0.26, 0.76, 1.0, 1.0)
+        } else {
+            LinearRgba::new(0.95, 0.46, 0.16, 1.0)
+        };
+        let mist_col = if is_cryo {
+            Color::srgba(0.56, 0.82, 0.98, 0.48)
+        } else {
+            Color::srgba(0.84, 0.52, 0.28, 0.48)
+        };
         for (idx, (cx, splash_lava)) in [
-            // Sector 1-2 opening chasms pouring right into the molten slag lake
             (26.0_f32, true),
             (340.0, true),
-            // Sector 3: The Smelter Cage
             (1260.0, false),
             (1580.0, false),
-            // Sector 4: Slag-Slope Chasms
             (2435.0, true),
             (3310.0, true),
-            // Sector 5: Sky-Gondola Abyss
             (3785.0, false),
             (4135.0, false),
-            // Sector 6: Conveyor Tower
             (5620.0, false),
-            // Sector 7: Reactor Crucible
             (6940.0, false),
             (7280.0, false),
-            // Sector 8: Citadel Approach Chasm
             (7975.0, true),
-            // Final Sanctum: Iron Titan Vulcanus
             (8660.0, false),
             (9080.0, false),
         ]
@@ -863,15 +997,17 @@ fn spawn_foundry_backdrop(
             let cy = 395.0_f32;
             let h = 1050.0_f32;
             commands.spawn((
-                Name::new(format!("FoundryMoltenCascade_{idx}")),
+                Name::new(format!("StageBackdropCascade_{idx}")),
+                StageBackdropEntity,
                 MoltenFlowVisual {
                     base_pos: Vec2::new(cx, cy),
                     phase: idx as f32 * 0.9,
                     is_lava_horizon: false,
+                    is_cryo,
                 },
                 Sprite {
                     image: cas_img.clone(),
-                    color: Color::srgba(0.62, 0.46, 0.34, 0.58),
+                    color: cas_col,
                     custom_size: Some(Vec2::new(26.0, h)),
                     image_mode: SpriteImageMode::Tiled {
                         tile_x: false,
@@ -881,8 +1017,8 @@ fn spawn_foundry_backdrop(
                     ..default()
                 },
                 PointLight2d {
-                    color: LinearRgba::new(0.95, 0.46, 0.16, 1.0),
-                    intensity: 0.95,
+                    color: cas_light,
+                    intensity: 0.90,
                     radius: 210.0,
                     height: 44.0,
                     falloff: 1.4,
@@ -891,10 +1027,10 @@ fn spawn_foundry_backdrop(
                 world_layer.clone(),
             ));
             if splash_lava {
-                // Soft warm mist crown where the pour meets the background lava lake
                 commands.spawn((
+                    StageBackdropEntity,
                     Sprite {
-                        color: Color::srgba(0.84, 0.52, 0.28, 0.48),
+                        color: mist_col,
                         custom_size: Some(Vec2::new(40.0, 9.0)),
                         ..default()
                     },
@@ -904,6 +1040,139 @@ fn spawn_foundry_backdrop(
             }
         }
     }
+
+    // Full 8-Sector industrial / cryogenic overhead volumetric lamps spanning all 9,700px!
+    let lamps: [(f32, f32, LinearRgba, f32); 22] = if is_cryo {
+        [
+            (-220.0, 130.0, LinearRgba::new(0.26, 0.86, 1.0, 1.0), 290.0),
+            (140.0, 165.0, LinearRgba::new(0.36, 0.78, 1.0, 1.0), 300.0),
+            (540.0, 240.0, LinearRgba::new(0.22, 0.92, 0.96, 1.0), 320.0),
+            (820.0, 395.0, LinearRgba::new(0.38, 0.74, 1.0, 1.0), 340.0),
+            (1240.0, 415.0, LinearRgba::new(0.24, 0.88, 1.0, 1.0), 380.0),
+            (1600.0, 415.0, LinearRgba::new(0.46, 0.64, 1.0, 1.0), 380.0),
+            (2060.0, 405.0, LinearRgba::new(0.28, 0.92, 1.0, 1.0), 360.0),
+            (2520.0, 415.0, LinearRgba::new(0.38, 0.82, 1.0, 1.0), 360.0),
+            (2980.0, 425.0, LinearRgba::new(0.22, 0.94, 0.96, 1.0), 360.0),
+            (3480.0, 415.0, LinearRgba::new(0.42, 0.72, 1.0, 1.0), 370.0),
+            (3980.0, 420.0, LinearRgba::new(0.26, 0.88, 1.0, 1.0), 370.0),
+            (4480.0, 425.0, LinearRgba::new(0.50, 0.62, 1.0, 1.0), 370.0),
+            (4980.0, 425.0, LinearRgba::new(0.24, 0.90, 1.0, 1.0), 380.0),
+            (5480.0, 430.0, LinearRgba::new(0.36, 0.84, 1.0, 1.0), 380.0),
+            (5980.0, 425.0, LinearRgba::new(0.26, 0.92, 0.95, 1.0), 380.0),
+            (6480.0, 415.0, LinearRgba::new(0.44, 0.70, 1.0, 1.0), 370.0),
+            (6920.0, 425.0, LinearRgba::new(0.28, 0.92, 1.0, 1.0), 390.0),
+            (7300.0, 425.0, LinearRgba::new(0.56, 0.58, 1.0, 1.0), 390.0),
+            (7780.0, 410.0, LinearRgba::new(0.32, 0.86, 1.0, 1.0), 370.0),
+            (8240.0, 410.0, LinearRgba::new(0.52, 0.66, 1.0, 1.0), 380.0),
+            (8680.0, 430.0, LinearRgba::new(0.26, 0.92, 1.0, 1.0), 420.0),
+            (9060.0, 430.0, LinearRgba::new(0.50, 0.80, 1.0, 1.0), 430.0),
+        ]
+    } else {
+        [
+            (-220.0, 130.0, LinearRgba::new(0.24, 0.88, 1.0, 1.0), 290.0),
+            (140.0, 165.0, LinearRgba::new(0.32, 0.84, 1.0, 1.0), 300.0),
+            (540.0, 240.0, LinearRgba::new(1.0, 0.56, 0.18, 1.0), 320.0),
+            (820.0, 395.0, LinearRgba::new(0.28, 0.88, 1.0, 1.0), 340.0),
+            (1240.0, 415.0, LinearRgba::new(1.0, 0.54, 0.18, 1.0), 380.0),
+            (1600.0, 415.0, LinearRgba::new(1.0, 0.62, 0.22, 1.0), 380.0),
+            (2060.0, 405.0, LinearRgba::new(0.26, 0.90, 1.0, 1.0), 360.0),
+            (2520.0, 415.0, LinearRgba::new(1.0, 0.50, 0.18, 1.0), 360.0),
+            (2980.0, 425.0, LinearRgba::new(1.0, 0.58, 0.20, 1.0), 360.0),
+            (3480.0, 415.0, LinearRgba::new(0.26, 0.88, 1.0, 1.0), 370.0),
+            (3980.0, 420.0, LinearRgba::new(1.0, 0.52, 0.18, 1.0), 370.0),
+            (4480.0, 425.0, LinearRgba::new(0.30, 0.86, 1.0, 1.0), 370.0),
+            (4980.0, 425.0, LinearRgba::new(1.0, 0.50, 0.18, 1.0), 380.0),
+            (5480.0, 430.0, LinearRgba::new(0.32, 0.88, 1.0, 1.0), 380.0),
+            (5980.0, 425.0, LinearRgba::new(1.0, 0.46, 0.22, 1.0), 380.0),
+            (6480.0, 415.0, LinearRgba::new(0.28, 0.90, 1.0, 1.0), 370.0),
+            (6920.0, 425.0, LinearRgba::new(0.28, 0.92, 1.0, 1.0), 390.0),
+            (7300.0, 425.0, LinearRgba::new(0.68, 0.36, 1.0, 1.0), 390.0),
+            (7780.0, 410.0, LinearRgba::new(1.0, 0.34, 0.22, 1.0), 370.0),
+            (8240.0, 410.0, LinearRgba::new(1.0, 0.46, 0.18, 1.0), 380.0),
+            (8680.0, 430.0, LinearRgba::new(1.0, 0.44, 0.14, 1.0), 420.0),
+            (9060.0, 430.0, LinearRgba::new(1.0, 0.62, 0.18, 1.0), 430.0),
+        ]
+    };
+
+    for (lx, ly, color, radius) in lamps {
+        let mut lamp = commands.spawn((
+            StageBackdropEntity,
+            PointLight2d {
+                color,
+                intensity: 2.05,
+                radius,
+                height: 52.0,
+                falloff: 1.35,
+            },
+            Transform::from_xyz(lx, ly, -4.0),
+            Visibility::default(),
+        ));
+        let cone_mat = vfx_materials.add(VfxEnergyMaterial {
+            data: VfxEnergyUniform {
+                params0: Vec4::new(vfx_mode::LAMP_LIGHT_CONE, 0.0, 0.0, 1.0),
+                params1: Vec4::new(1.0, 1.0, 0.0, 1.0),
+                color_a: Vec4::new(color.red * 0.95, color.green * 0.95, color.blue * 0.95, 0.16),
+                color_b: Vec4::new(
+                    (color.red + 0.35).min(1.4),
+                    (color.green + 0.35).min(1.4),
+                    (color.blue + 0.35).min(1.4),
+                    1.0,
+                ),
+            },
+        });
+        lamp.with_children(|parent| {
+            parent.spawn((
+                AnimatedVfxEnergy {
+                    phase_offset: lx * 0.013,
+                },
+                Mesh2d(shared_quad.0.clone()),
+                MeshMaterial2d(cone_mat),
+                Transform::from_xyz(0.0, -60.0, -0.3).with_scale(Vec3::new(86.0, 118.0, 1.0)),
+                world_layer.clone(),
+            ));
+            if let Some(hood) = lamp_hood {
+                parent.spawn((
+                    Sprite {
+                        image: hood.clone(),
+                        custom_size: Some(Vec2::new(28.0, 14.0)),
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, 4.0, 0.1),
+                    world_layer.clone(),
+                ));
+            }
+            parent.spawn((
+                Sprite {
+                    color: Color::linear_rgb(color.red * 3.8, color.green * 3.8, color.blue * 3.8),
+                    custom_size: Some(Vec2::new(14.0, 3.0)),
+                    ..default()
+                },
+                Transform::from_xyz(0.0, -2.0, 0.2),
+                world_layer.clone(),
+            ));
+        });
+    }
+}
+
+fn spawn_foundry_backdrop(
+    mut commands: Commands,
+    campaign: Res<CampaignState>,
+    foundry: Res<FoundryArtAssets>,
+    cryo: Res<CryoArtAssets>,
+    vfx: Res<VfxArtAssets>,
+    shared_quad: Res<SharedVfxQuadMesh>,
+    mut vfx_materials: ResMut<Assets<VfxEnergyMaterial>>,
+) {
+    let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
+
+    spawn_stage_biome_backdrop(
+        &mut commands,
+        campaign.active_stage,
+        &foundry,
+        &cryo,
+        &shared_quad,
+        &mut vfx_materials,
+    );
 
     commands.spawn((
         Name::new("HeroCompanionLight"),
@@ -941,99 +1210,6 @@ fn spawn_foundry_backdrop(
         Transform::from_xyz(-200.0, 20.0, 6.0),
     ));
 
-    // Full 8-Sector industrial overhead foundry lamps spanning ALL 9,700px of Stage 1 (-240 .. 9180)!
-    // Color temperature evolves naturally across sectors: Cyan Intake -> Amber Smelter ->
-    // Molten Chasm -> Electric Cyan-Violet Reactor Crucible -> Crimson Citadel -> Molten Gold Sanctum!
-    for (lx, ly, color, radius) in [
-        // Sector 1-2: Intake Runway & Maintenance Shaft
-        (-220.0, 130.0, LinearRgba::new(0.24, 0.88, 1.0, 1.0), 290.0),
-        (140.0, 165.0, LinearRgba::new(0.32, 0.84, 1.0, 1.0), 300.0),
-        (540.0, 240.0, LinearRgba::new(1.0, 0.56, 0.18, 1.0), 320.0),
-        (820.0, 395.0, LinearRgba::new(0.28, 0.88, 1.0, 1.0), 340.0),
-        // Sector 3: The Smelter Cage
-        (1240.0, 415.0, LinearRgba::new(1.0, 0.54, 0.18, 1.0), 380.0),
-        (1600.0, 415.0, LinearRgba::new(1.0, 0.62, 0.22, 1.0), 380.0),
-        // Sector 4: Molten Chasm & Sky Bridges
-        (2060.0, 405.0, LinearRgba::new(0.26, 0.90, 1.0, 1.0), 360.0),
-        (2520.0, 415.0, LinearRgba::new(1.0, 0.50, 0.18, 1.0), 360.0),
-        (2980.0, 425.0, LinearRgba::new(1.0, 0.58, 0.20, 1.0), 360.0),
-        (3480.0, 415.0, LinearRgba::new(0.26, 0.88, 1.0, 1.0), 370.0),
-        // Sector 5: Vertical Refinery & Mag-Lev Gauntlet
-        (3980.0, 420.0, LinearRgba::new(1.0, 0.52, 0.18, 1.0), 370.0),
-        (4480.0, 425.0, LinearRgba::new(0.30, 0.86, 1.0, 1.0), 370.0),
-        (4980.0, 425.0, LinearRgba::new(1.0, 0.50, 0.18, 1.0), 380.0),
-        (5480.0, 430.0, LinearRgba::new(0.32, 0.88, 1.0, 1.0), 380.0),
-        (5980.0, 425.0, LinearRgba::new(1.0, 0.46, 0.22, 1.0), 380.0),
-        (6480.0, 415.0, LinearRgba::new(0.28, 0.90, 1.0, 1.0), 370.0),
-        // Sector 6: The Reactor Crucible (High-Voltage Cyan & Violet!)
-        (6920.0, 425.0, LinearRgba::new(0.28, 0.92, 1.0, 1.0), 390.0),
-        (7300.0, 425.0, LinearRgba::new(0.68, 0.36, 1.0, 1.0), 390.0),
-        // Sector 7: Citadel Approach (Crimson-Amber Boss Warning!)
-        (7780.0, 410.0, LinearRgba::new(1.0, 0.34, 0.22, 1.0), 370.0),
-        (8240.0, 410.0, LinearRgba::new(1.0, 0.46, 0.18, 1.0), 380.0),
-        // Sector 8: Iron Titan Vulcanus Furnace Sanctum!
-        (8680.0, 430.0, LinearRgba::new(1.0, 0.44, 0.14, 1.0), 420.0),
-        (9060.0, 430.0, LinearRgba::new(1.0, 0.62, 0.18, 1.0), 430.0),
-    ] {
-        let mut lamp = commands.spawn((
-            PointLight2d {
-                color,
-                intensity: 2.15,
-                radius,
-                height: 52.0,
-                falloff: 1.35,
-            },
-            Transform::from_xyz(lx, ly, -4.0),
-            Visibility::default(),
-        ));
-        let cone_mat = vfx_materials.add(VfxEnergyMaterial {
-            data: VfxEnergyUniform {
-                params0: Vec4::new(vfx_mode::LAMP_LIGHT_CONE, 0.0, 0.0, 1.0),
-                params1: Vec4::new(1.0, 1.0, 0.0, 1.0),
-                color_a: Vec4::new(color.red * 0.95, color.green * 0.95, color.blue * 0.95, 0.16),
-                color_b: Vec4::new(
-                    (color.red + 0.35).min(1.4),
-                    (color.green + 0.35).min(1.4),
-                    (color.blue + 0.35).min(1.4),
-                    1.0,
-                ),
-            },
-        });
-        lamp.with_children(|parent| {
-            // Soft GPU-shader volumetric light cone descending into the industrial haze!
-            parent.spawn((
-                AnimatedVfxEnergy {
-                    phase_offset: lx * 0.013,
-                },
-                Mesh2d(shared_quad.0.clone()),
-                MeshMaterial2d(cone_mat),
-                Transform::from_xyz(0.0, -60.0, -0.3).with_scale(Vec3::new(86.0, 118.0, 1.0)),
-                world_layer.clone(),
-            ));
-            // Industrial hanging iron lamp hood + glowing bulb!
-            if let Some(ref hood) = foundry.lamp_fixture {
-                parent.spawn((
-                    Sprite {
-                        image: hood.clone(),
-                        custom_size: Some(Vec2::new(28.0, 14.0)),
-                        ..default()
-                    },
-                    Transform::from_xyz(0.0, 4.0, 0.1),
-                    world_layer.clone(),
-                ));
-            }
-            parent.spawn((
-                Sprite {
-                    color: Color::linear_rgb(color.red * 3.8, color.green * 3.8, color.blue * 3.8),
-                    custom_size: Some(Vec2::new(14.0, 3.0)),
-                    ..default()
-                },
-                Transform::from_xyz(0.0, -2.0, 0.2),
-                world_layer.clone(),
-            ));
-        });
-    }
-
     // Smash-style sculpted winged holographic Angel Respawn Platform (hidden until PlayerRespawnState.active)
     let respawn_sprite = if let Some(ref img) = vfx.respawn_platform {
         Sprite {
@@ -1062,8 +1238,34 @@ fn spawn_foundry_backdrop(
         },
         Transform::from_xyz(0.0, 0.0, 5.0),
         Visibility::Hidden,
-        world_layer.clone(),
+        world_layer,
     ));
+}
+
+#[allow(clippy::too_many_arguments)]
+fn swap_stage_backdrop_on_switch(
+    mut commands: Commands,
+    mut switches: MessageReader<StageSwitchEvent>,
+    foundry: Res<FoundryArtAssets>,
+    cryo: Res<CryoArtAssets>,
+    shared_quad: Res<SharedVfxQuadMesh>,
+    mut vfx_materials: ResMut<Assets<VfxEnergyMaterial>>,
+    existing: Query<Entity, With<StageBackdropEntity>>,
+) {
+    let Some(target_stage) = switches.read().last().map(|ev| ev.0) else {
+        return;
+    };
+    for e in &existing {
+        commands.entity(e).despawn();
+    }
+    spawn_stage_biome_backdrop(
+        &mut commands,
+        target_stage,
+        &foundry,
+        &cryo,
+        &shared_quad,
+        &mut vfx_materials,
+    );
 }
 
 struct BakedSpriteHandles {
@@ -1403,18 +1605,39 @@ fn decorate_added_player(
 #[allow(clippy::type_complexity)]
 fn decorate_added_solids(
     mut commands: Commands,
+    campaign: Res<CampaignState>,
     foundry: Res<FoundryArtAssets>,
+    cryo: Res<CryoArtAssets>,
     added: Query<
-        (Entity, &SolidRect),
+        (Entity, &SolidRect, Has<IceSurface>),
         (Added<SolidRect>, Without<LockdownGate>, Without<BreakableWall>),
     >,
 ) {
     let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
-    for (entity, rect) in &added {
+    let is_cryo = campaign.active_stage == StageId::Stage2Cryo;
+    let wall_tex = if is_cryo {
+        cryo.tile_wall.as_ref().or(foundry.tile_wall.as_ref())
+    } else {
+        foundry.tile_wall.as_ref()
+    };
+    let metal_tex = if is_cryo {
+        cryo.tile_metal.as_ref().or(foundry.tile_metal.as_ref())
+    } else {
+        foundry.tile_metal.as_ref()
+    };
+    let default_trim = if is_cryo {
+        cryo.tile_trim_top
+            .as_ref()
+            .or(foundry.tile_trim_top.as_ref())
+    } else {
+        foundry.tile_trim_top.as_ref()
+    };
+
+    for (entity, rect, is_ice) in &added {
         let size = rect.half_extents * 2.0;
         let is_wall = size.y > size.x * 1.35;
         let sprite = if is_wall {
-            if let Some(ref wall_img) = foundry.tile_wall {
+            if let Some(wall_img) = wall_tex {
                 Sprite {
                     image: wall_img.clone(),
                     color: Color::srgb(0.95, 0.96, 1.0),
@@ -1433,7 +1656,7 @@ fn decorate_added_solids(
                     ..default()
                 }
             }
-        } else if let Some(ref tile_img) = foundry.tile_metal {
+        } else if let Some(tile_img) = metal_tex {
             Sprite {
                 image: tile_img.clone(),
                 color: Color::srgb(0.92, 0.95, 1.0),
@@ -1458,11 +1681,16 @@ fn decorate_added_solids(
             world_layer.clone(),
         ));
         if is_wall {
-            // Crisp amber-lit wall-jump edge strips
+            let strip_col = if is_cryo {
+                Color::linear_rgb(0.32, 2.4, 3.6)
+            } else {
+                Color::linear_rgb(2.2, 1.0, 0.22)
+            };
             for side in [-1.0_f32, 1.0_f32] {
                 commands.spawn((
+                    StageWorldEntity,
                     Sprite {
-                        color: Color::linear_rgb(2.2, 1.0, 0.22),
+                        color: strip_col,
                         custom_size: Some(Vec2::new(2.0, size.y)),
                         ..default()
                     },
@@ -1475,10 +1703,16 @@ fn decorate_added_solids(
                 ));
             }
         } else {
-            // Beveled steel walkway top cap with amber-black hazard chevrons + cyan conduit rail!
-            let trim_h = size.y.min(12.0);
-            if let Some(ref trim_img) = foundry.tile_trim_top {
+            // Gleaming Mirror-Ice top cap for `IceSurface` decks, or beveled walkway trim!
+            let trim_tex = if is_ice {
+                cryo.tile_ice_top.as_ref().or(default_trim)
+            } else {
+                default_trim
+            };
+            let trim_h = size.y.min(if is_ice { 14.0 } else { 12.0 });
+            if let Some(trim_img) = trim_tex {
                 commands.spawn((
+                    StageWorldEntity,
                     Sprite {
                         image: trim_img.clone(),
                         custom_size: Some(Vec2::new(size.x, trim_h)),
@@ -1497,22 +1731,29 @@ fn decorate_added_solids(
                     world_layer.clone(),
                 ));
             }
-            // Subtle HDR cyan bloom rail accent along the deck lip
+            // Subtle HDR bloom rail accent along the deck lip (extra crisp glacial sheen on ice!)
+            let rail_col = if is_ice {
+                Color::linear_rgba(0.55, 3.4, 4.8, 0.85)
+            } else {
+                Color::linear_rgba(0.25, 2.6, 3.8, 0.65)
+            };
             commands.spawn((
+                StageWorldEntity,
                 Sprite {
-                    color: Color::linear_rgba(0.25, 2.6, 3.8, 0.65),
-                    custom_size: Some(Vec2::new(size.x, 1.5)),
+                    color: rail_col,
+                    custom_size: Some(Vec2::new(size.x, if is_ice { 2.0 } else { 1.5 })),
                     ..default()
                 },
                 Transform::from_xyz(
                     rect.center.x,
-                    rect.center.y + rect.half_extents.y - 3.5,
+                    rect.center.y + rect.half_extents.y - if is_ice { 1.5 } else { 3.5 },
                     -4.6,
                 ),
                 world_layer.clone(),
             ));
             // Dark recessed shadow lip underneath floating decks
             commands.spawn((
+                StageWorldEntity,
                 Sprite {
                     color: Color::srgba(0.02, 0.03, 0.05, 0.85),
                     custom_size: Some(Vec2::new(size.x, 3.0)),
@@ -1526,7 +1767,7 @@ fn decorate_added_solids(
                 world_layer.clone(),
             ));
 
-            // Heavy recessed industrial foundry support columns anchoring wide decks into the depths!
+            // Heavy recessed support columns anchoring wide decks into the depths!
             if size.x >= 96.0 {
                 let pillar_h = 260.0_f32;
                 let pillar_y = rect.center.y - rect.half_extents.y - pillar_h * 0.5;
@@ -1543,7 +1784,7 @@ fn decorate_added_solids(
                     ]
                 };
                 for px in cols {
-                    let pillar_sp = if let Some(ref wall_img) = foundry.tile_wall {
+                    let pillar_sp = if let Some(wall_img) = wall_tex {
                         Sprite {
                             image: wall_img.clone(),
                             color: Color::srgba(0.46, 0.50, 0.62, 0.88),
@@ -1563,6 +1804,7 @@ fn decorate_added_solids(
                         }
                     };
                     commands.spawn((
+                        StageWorldEntity,
                         pillar_sp,
                         Transform::from_xyz(px, pillar_y, -7.2),
                         world_layer.clone(),
@@ -1577,15 +1819,31 @@ fn decorate_added_solids(
 /// anchored cleanly between heavy industrial emitter housings!
 fn decorate_added_lockdown_gates(
     mut commands: Commands,
+    campaign: Res<CampaignState>,
     vfx: Res<VfxArtAssets>,
     shared_quad: Res<SharedVfxQuadMesh>,
     mut vfx_materials: ResMut<Assets<VfxEnergyMaterial>>,
     added: Query<(Entity, &LockdownGate, &SolidRect), Added<LockdownGate>>,
 ) {
     let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
+    let is_cryo = campaign.active_stage == StageId::Stage2Cryo;
     for (entity, gate, rect) in &added {
         let size = rect.half_extents * 2.0;
-        let (col_a, col_b, light_col) = if gate.is_boss {
+        let (col_a, col_b, light_col) = if is_cryo {
+            if gate.is_boss {
+                (
+                    Vec4::new(0.42, 3.8, 5.6, 0.96),
+                    Vec4::new(3.8, 5.4, 5.8, 1.0),
+                    LinearRgba::new(0.28, 0.86, 1.0, 1.0),
+                )
+            } else {
+                (
+                    Vec4::new(0.38, 2.4, 5.4, 0.96),
+                    Vec4::new(3.4, 5.0, 5.8, 1.0),
+                    LinearRgba::new(0.25, 0.68, 1.0, 1.0),
+                )
+            }
+        } else if gate.is_boss {
             (
                 Vec4::new(4.8, 1.35, 0.28, 0.96),
                 Vec4::new(5.6, 4.6, 2.2, 1.0),
@@ -1660,18 +1918,34 @@ fn decorate_added_lockdown_gates(
 
 fn decorate_added_slopes(
     mut commands: Commands,
+    campaign: Res<CampaignState>,
     foundry: Res<FoundryArtAssets>,
-    added: Query<(Entity, &SlopeSegment), Added<SlopeSegment>>,
+    cryo: Res<CryoArtAssets>,
+    added: Query<(Entity, &SlopeSegment, Has<IceSurface>), Added<SlopeSegment>>,
 ) {
     let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
-    for (entity, slope) in &added {
+    let is_cryo = campaign.active_stage == StageId::Stage2Cryo;
+    for (entity, slope, is_ice) in &added {
         let delta = slope.end - slope.start;
         let len = delta.length().max(1.0);
         let mid = (slope.start + slope.end) * 0.5;
         let angle = slope.angle_rad();
         let normal = slope.normal();
 
-        let body_sprite = if let Some(ref trim_img) = foundry.tile_trim_top {
+        let trim_tex = if is_ice {
+            cryo.tile_ice_top
+                .as_ref()
+                .or(cryo.tile_trim_top.as_ref())
+                .or(foundry.tile_trim_top.as_ref())
+        } else if is_cryo {
+            cryo.tile_trim_top
+                .as_ref()
+                .or(foundry.tile_trim_top.as_ref())
+        } else {
+            foundry.tile_trim_top.as_ref()
+        };
+
+        let body_sprite = if let Some(trim_img) = trim_tex {
             Sprite {
                 image: trim_img.clone(),
                 custom_size: Some(Vec2::new(len + 4.0, 14.0)),
@@ -1697,8 +1971,13 @@ fn decorate_added_slopes(
             world_layer.clone(),
         ));
         commands.spawn((
+            StageWorldEntity,
             Sprite {
-                color: Color::linear_rgba(0.25, 2.6, 3.8, 0.72),
+                color: if is_ice {
+                    Color::linear_rgba(0.65, 3.8, 5.2, 0.88)
+                } else {
+                    Color::linear_rgba(0.25, 2.6, 3.8, 0.72)
+                },
                 custom_size: Some(Vec2::new(len + 2.0, 2.0)),
                 ..default()
             },
@@ -1711,15 +1990,33 @@ fn decorate_added_slopes(
 
 fn decorate_added_one_ways(
     mut commands: Commands,
+    campaign: Res<CampaignState>,
     foundry: Res<FoundryArtAssets>,
+    cryo: Res<CryoArtAssets>,
     added: Query<(Entity, &OneWayPlatform, Option<&MovingPlatform>), Added<OneWayPlatform>>,
 ) {
     let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
+    let is_cryo = campaign.active_stage == StageId::Stage2Cryo;
+    let moving_tex = if is_cryo {
+        cryo.platform_moving
+            .as_ref()
+            .or(foundry.platform_moving.as_ref())
+    } else {
+        foundry.platform_moving.as_ref()
+    };
+    let oneway_tex = if is_cryo {
+        cryo.platform_oneway
+            .as_ref()
+            .or(foundry.platform_oneway.as_ref())
+    } else {
+        foundry.platform_oneway.as_ref()
+    };
+
     for (entity, plat, maybe_moving) in &added {
         let width = plat.half_width * 2.0;
         let is_moving = maybe_moving.is_some();
         let (vis_h, y_shift, sprite) = if is_moving {
-            let sp = if let Some(ref img) = foundry.platform_moving {
+            let sp = if let Some(img) = moving_tex {
                 Sprite {
                     image: img.clone(),
                     custom_size: Some(Vec2::new(width, 16.0)),
@@ -1739,7 +2036,7 @@ fn decorate_added_one_ways(
             };
             (16.0, (plat.thickness - 16.0) * 0.5, sp)
         } else {
-            let sp = if let Some(ref img) = foundry.platform_oneway {
+            let sp = if let Some(img) = oneway_tex {
                 Sprite {
                     image: img.clone(),
                     custom_size: Some(Vec2::new(width, 12.0)),
@@ -1759,8 +2056,8 @@ fn decorate_added_one_ways(
             };
             (12.0, (plat.thickness - 12.0) * 0.5, sp)
         };
-        let top_glow = if is_moving {
-            Color::linear_rgba(0.28, 3.2, 4.4, 0.72)
+        let top_glow = if is_moving || is_cryo {
+            Color::linear_rgba(0.32, 3.3, 4.6, 0.72)
         } else {
             Color::linear_rgba(3.4, 1.55, 0.22, 0.65)
         };
@@ -1817,13 +2114,20 @@ fn decorate_added_one_ways(
 
 fn decorate_added_boost_pads(
     mut commands: Commands,
+    campaign: Res<CampaignState>,
     foundry: Res<FoundryArtAssets>,
+    cryo: Res<CryoArtAssets>,
     added: Query<(Entity, &BoostPad), Added<BoostPad>>,
 ) {
     let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
+    let tex = if campaign.active_stage == StageId::Stage2Cryo {
+        cryo.boost_pad.as_ref().or(foundry.boost_pad.as_ref())
+    } else {
+        foundry.boost_pad.as_ref()
+    };
     for (entity, pad) in &added {
         let size = pad.half_extents * 2.0;
-        let sp = if let Some(ref img) = foundry.boost_pad {
+        let sp = if let Some(img) = tex {
             Sprite {
                 image: img.clone(),
                 flip_x: pad.direction.x < 0.0,
@@ -1860,13 +2164,21 @@ fn decorate_added_boost_pads(
 
 fn decorate_added_jump_pads(
     mut commands: Commands,
+    campaign: Res<CampaignState>,
     foundry: Res<FoundryArtAssets>,
+    cryo: Res<CryoArtAssets>,
     added: Query<(Entity, &JumpPad), Added<JumpPad>>,
 ) {
     let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
+    let is_cryo = campaign.active_stage == StageId::Stage2Cryo;
+    let tex = if is_cryo {
+        cryo.jump_pad.as_ref().or(foundry.jump_pad.as_ref())
+    } else {
+        foundry.jump_pad.as_ref()
+    };
     for (entity, pad) in &added {
         let size = pad.half_extents * 2.0;
-        let sp = if let Some(ref img) = foundry.jump_pad {
+        let sp = if let Some(img) = tex {
             Sprite {
                 image: img.clone(),
                 color: Color::linear_rgb(1.35, 1.30, 1.15),
@@ -1885,7 +2197,11 @@ fn decorate_added_jump_pads(
             .insert((
                 sp,
                 PointLight2d {
-                    color: LinearRgba::new(1.0, 0.72, 0.16, 1.0),
+                    color: if is_cryo {
+                        LinearRgba::new(0.25, 0.90, 1.0, 1.0)
+                    } else {
+                        LinearRgba::new(1.0, 0.72, 0.16, 1.0)
+                    },
                     intensity: 2.2,
                     radius: 150.0,
                     height: 22.0,
@@ -1911,15 +2227,21 @@ fn decorate_added_jump_pads(
 
 fn decorate_added_checkpoint_beacons(
     mut commands: Commands,
+    campaign: Res<CampaignState>,
     foundry: Res<FoundryArtAssets>,
+    cryo: Res<CryoArtAssets>,
     vfx: Res<VfxArtAssets>,
     added: Query<(Entity, &CheckpointBeacon), Added<CheckpointBeacon>>,
 ) {
     let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
+    let cp_tex = if campaign.active_stage == StageId::Stage2Cryo {
+        cryo.checkpoint.as_ref().or(foundry.checkpoint.as_ref())
+    } else {
+        foundry.checkpoint.as_ref()
+    };
     for (entity, _beacon) in &added {
         commands.entity(entity).with_children(|parent| {
-            // Armored steel resonance pylon pedestal
-            if let Some(ref cp_img) = foundry.checkpoint {
+            if let Some(cp_img) = cp_tex {
                 parent.spawn((
                     Sprite {
                         image: cp_img.clone(),
@@ -2063,15 +2385,29 @@ fn decorate_added_collectibles(
 
 fn decorate_added_breakable_walls(
     mut commands: Commands,
+    campaign: Res<CampaignState>,
     foundry: Res<FoundryArtAssets>,
+    cryo: Res<CryoArtAssets>,
     added: Query<(Entity, &BreakableWall), Added<BreakableWall>>,
 ) {
     let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
+    let is_cryo = campaign.active_stage == StageId::Stage2Cryo;
+    let wall_tex = if is_cryo {
+        cryo.breakable_wall
+            .as_ref()
+            .or(foundry.breakable_wall.as_ref())
+    } else {
+        foundry.breakable_wall.as_ref()
+    };
     for (entity, wall) in &added {
-        let sp = if let Some(ref img) = foundry.breakable_wall {
+        let sp = if let Some(img) = wall_tex {
             Sprite {
                 image: img.clone(),
-                color: Color::linear_rgb(1.25, 1.15, 1.05),
+                color: if is_cryo {
+                    Color::linear_rgb(1.10, 1.35, 1.55)
+                } else {
+                    Color::linear_rgb(1.25, 1.15, 1.05)
+                },
                 custom_size: Some(wall.size),
                 image_mode: SpriteImageMode::Tiled {
                     tile_x: true,
@@ -2082,7 +2418,11 @@ fn decorate_added_breakable_walls(
             }
         } else {
             Sprite {
-                color: Color::srgb(0.32, 0.20, 0.16),
+                color: if is_cryo {
+                    Color::srgb(0.20, 0.42, 0.62)
+                } else {
+                    Color::srgb(0.32, 0.20, 0.16)
+                },
                 custom_size: Some(wall.size),
                 ..default()
             }
@@ -2092,7 +2432,11 @@ fn decorate_added_breakable_walls(
             .insert((
                 sp,
                 PointLight2d {
-                    color: LinearRgba::new(1.0, 0.45, 0.14, 1.0),
+                    color: if is_cryo {
+                        LinearRgba::new(0.28, 0.88, 1.0, 1.0)
+                    } else {
+                        LinearRgba::new(1.0, 0.45, 0.14, 1.0)
+                    },
                     intensity: 1.8,
                     radius: 130.0,
                     height: 20.0,
@@ -2101,12 +2445,17 @@ fn decorate_added_breakable_walls(
                 world_layer.clone(),
             ))
             .with_children(|parent| {
-                // Pulsing HDR molten seam highlights signaling SMASHABLE bulkhead!
+                // Pulsing fracture highlights signaling SMASHABLE bulkhead (melt 2x faster with Forge Diamond!)
+                let crack_col = if is_cryo {
+                    Color::linear_rgb(0.45, 3.8, 5.4)
+                } else {
+                    Color::linear_rgb(4.6, 1.9, 0.32)
+                };
                 for (y_off, rot) in [(-14.0, 0.45_f32), (0.0, -0.48), (14.0, 0.40)] {
                     parent.spawn((
                         BreakableWallCrackVisual { owner: entity },
                         Sprite {
-                            color: Color::linear_rgb(4.6, 1.9, 0.32),
+                            color: crack_col,
                             custom_size: Some(Vec2::new(wall.size.x * 0.88, 2.5)),
                             ..default()
                         },
@@ -2121,20 +2470,30 @@ fn decorate_added_breakable_walls(
 
 fn decorate_added_timed_hazard_beams(
     mut commands: Commands,
+    campaign: Res<CampaignState>,
     vfx: Res<VfxArtAssets>,
     shared_quad: Res<SharedVfxQuadMesh>,
     mut vfx_materials: ResMut<Assets<VfxEnergyMaterial>>,
     added: Query<(Entity, &TimedHazardBeam), Added<TimedHazardBeam>>,
 ) {
     let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
+    let is_cryo = campaign.active_stage == StageId::Stage2Cryo;
     for (entity, beam) in &added {
         let size = beam.half_extents * 2.0;
         let beam_mat = vfx_materials.add(VfxEnergyMaterial {
             data: VfxEnergyUniform {
                 params0: Vec4::new(vfx_mode::PLASMA_BEAM, 0.0, 0.0, 0.0),
                 params1: Vec4::new((size.y / size.x.max(12.0)).max(2.0), 1.0, 0.0, 1.0),
-                color_a: Vec4::new(5.2, 1.2, 0.32, 0.96),
-                color_b: Vec4::new(5.8, 4.8, 2.4, 1.0),
+                color_a: if is_cryo {
+                    Vec4::new(0.40, 3.6, 5.6, 0.96)
+                } else {
+                    Vec4::new(5.2, 1.2, 0.32, 0.96)
+                },
+                color_b: if is_cryo {
+                    Vec4::new(4.2, 5.6, 5.8, 1.0)
+                } else {
+                    Vec4::new(5.8, 4.8, 2.4, 1.0)
+                },
             },
         });
         commands.entity(entity).with_children(|parent| {
@@ -2201,6 +2560,7 @@ fn decorate_added_loop_splines(
             let inward_n = Vec2::new(-tangent.y, tangent.x);
 
             commands.spawn((
+                StageWorldEntity,
                 Sprite {
                     color: Color::srgb(0.16, 0.21, 0.32),
                     custom_size: Some(Vec2::new(seg_len + 2.5, 10.0)),
@@ -2211,6 +2571,7 @@ fn decorate_added_loop_splines(
                 world_layer.clone(),
             ));
             commands.spawn((
+                StageWorldEntity,
                 Sprite {
                     color: Color::linear_rgb(0.22, 2.35, 3.8),
                     custom_size: Some(Vec2::new(seg_len + 1.5, 2.0)),
@@ -2224,6 +2585,7 @@ fn decorate_added_loop_splines(
 
         let apex = spline.sample(0.5);
         commands.spawn((
+            StageWorldEntity,
             PointLight2d {
                 color: LinearRgba::new(0.25, 0.88, 1.0, 1.0),
                 intensity: 2.6,
@@ -2244,17 +2606,29 @@ fn decorate_added_loop_splines(
 
 fn decorate_added_spike_hazards(
     mut commands: Commands,
+    campaign: Res<CampaignState>,
     foundry: Res<FoundryArtAssets>,
+    cryo: Res<CryoArtAssets>,
     added: Query<(Entity, &SpikeHazard), Added<SpikeHazard>>,
 ) {
     let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
+    let is_cryo = campaign.active_stage == StageId::Stage2Cryo;
+    let spike_tex = if is_cryo {
+        cryo.spikes.as_ref().or(foundry.spikes.as_ref())
+    } else {
+        foundry.spikes.as_ref()
+    };
     for (entity, spike) in &added {
         let size = spike.half_extents * 2.0;
-        if let Some(ref img) = foundry.spikes {
+        if let Some(img) = spike_tex {
             commands.entity(entity).insert((
                 Sprite {
                     image: img.clone(),
-                    color: Color::linear_rgb(1.45, 1.05, 1.05),
+                    color: if is_cryo {
+                        Color::linear_rgb(1.1, 1.35, 1.55)
+                    } else {
+                        Color::linear_rgb(1.45, 1.05, 1.05)
+                    },
                     custom_size: Some(Vec2::new(size.x, size.y.max(14.0))),
                     image_mode: SpriteImageMode::Tiled {
                         tile_x: true,
@@ -2308,13 +2682,20 @@ fn decorate_added_spike_hazards(
 
 fn decorate_added_wall_turrets(
     mut commands: Commands,
+    campaign: Res<CampaignState>,
     foundry: Res<FoundryArtAssets>,
+    cryo: Res<CryoArtAssets>,
     added: Query<(Entity, &WallTurret), Added<WallTurret>>,
 ) {
     let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
+    let turret_tex = if campaign.active_stage == StageId::Stage2Cryo {
+        cryo.turret.as_ref().or(foundry.turret.as_ref())
+    } else {
+        foundry.turret.as_ref()
+    };
     for (entity, turret) in &added {
         commands.entity(entity).with_children(|parent| {
-            if let Some(ref img) = foundry.turret {
+            if let Some(img) = turret_tex {
                 parent.spawn((
                     Sprite {
                         image: img.clone(),
@@ -2371,7 +2752,7 @@ fn decorate_added_enemy_fighters(
     let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
 
     for (entity, fighter, body) in &added {
-        let is_boss = fighter.archetype == EnemyArchetype::FoundryBoss;
+        let is_boss = fighter.archetype.is_boss();
         // Exact measured boot-sole height from each baked sprite sheet so EVERY enemy plants
         // flush on solid decks, slopes, and one-way catwalks with ZERO hovering!
         let (pack, foot_dist) = match fighter.archetype {
@@ -2380,6 +2761,7 @@ fn decorate_added_enemy_fighters(
             EnemyArchetype::ArcaneZoner => ("mage", 26.5),
             EnemyArchetype::ShadowAssassin => ("assassin", 35.0),
             EnemyArchetype::FoundryBoss => ("boss", 33.5),
+            EnemyArchetype::CryoBoss => ("borealis", 34.5),
         };
         let foot_offset_y = foot_dist - body.half_extents.y;
 
@@ -2444,12 +2826,17 @@ fn decorate_added_enemy_fighters(
                     world_layer.clone(),
                 ));
                 if is_boss {
-                    // Dramatic fiery rim light making Vulcanus tower with molten presence!
+                    // Dramatic boss rim light: molten furnace orange on Vulcanus, glacial cyan on Borealis!
+                    let (rim_color, rim_intensity) = if fighter.archetype == EnemyArchetype::CryoBoss {
+                        (LinearRgba::new(0.28, 0.85, 1.0, 1.0), 2.15)
+                    } else {
+                        (LinearRgba::new(1.0, 0.44, 0.14, 1.0), 2.35)
+                    };
                     parent.spawn((
-                        Name::new("BossMoltenRimLight"),
+                        Name::new("BossRimLight"),
                         PointLight2d {
-                            color: LinearRgba::new(1.0, 0.44, 0.14, 1.0),
-                            intensity: 2.6,
+                            color: rim_color,
+                            intensity: rim_intensity,
                             radius: 175.0,
                             height: 36.0,
                             falloff: 1.4,
@@ -2465,6 +2852,7 @@ fn decorate_added_enemy_fighters(
                 EnemyArchetype::ArcaneZoner => Color::srgb(0.58, 0.20, 0.78),
                 EnemyArchetype::ShadowAssassin => Color::srgb(0.72, 0.16, 0.48),
                 EnemyArchetype::FoundryBoss => Color::linear_rgb(4.0, 1.2, 0.3),
+                EnemyArchetype::CryoBoss => Color::linear_rgb(0.35, 3.6, 5.2),
             };
             commands.entity(entity).with_children(|parent| {
                 parent.spawn((
@@ -2590,19 +2978,39 @@ fn decorate_added_breaker_waves(
     let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
     for (entity, wave) in &added {
         let dir = wave.facing.signum();
+        let (col_a, col_b, light_col, scale_px) = match wave.aspect {
+            AspectDiamond::Rift => (
+                Vec4::new(0.24, 3.4, 5.0, 0.98),
+                Vec4::new(4.6, 5.4, 5.8, 1.0),
+                LinearRgba::new(0.20, 0.95, 1.0, 1.0),
+                48.0,
+            ),
+            AspectDiamond::Forge => (
+                Vec4::new(5.2, 2.2, 0.32, 0.98),
+                Vec4::new(5.8, 5.2, 2.4, 1.0),
+                LinearRgba::new(1.0, 0.52, 0.16, 1.0),
+                58.0,
+            ),
+            AspectDiamond::Stasis => (
+                Vec4::new(0.42, 3.2, 5.6, 0.98),
+                Vec4::new(4.4, 5.6, 5.8, 1.0),
+                LinearRgba::new(0.35, 0.84, 1.0, 1.0),
+                50.0,
+            ),
+        };
         let wave_mat = vfx_materials.add(VfxEnergyMaterial {
             data: VfxEnergyUniform {
                 params0: Vec4::new(vfx_mode::CRESCENT_SLASH, 0.0, 0.15, 1.2),
                 params1: Vec4::new(1.0, 1.48, 0.0, dir),
-                color_a: Vec4::new(0.24, 3.4, 5.0, 0.98),
-                color_b: Vec4::new(4.6, 5.4, 5.8, 1.0),
+                color_a: col_a,
+                color_b: col_b,
             },
         });
         commands
             .entity(entity)
             .insert((
                 PointLight2d {
-                    color: LinearRgba::new(0.20, 0.95, 1.0, 1.0),
+                    color: light_col,
                     intensity: 3.0,
                     radius: 175.0,
                     height: 22.0,
@@ -2616,7 +3024,7 @@ fn decorate_added_breaker_waves(
                     Mesh2d(shared_quad.0.clone()),
                     MeshMaterial2d(wave_mat),
                     Transform::from_xyz(-dir * 8.0, 0.0, 0.1)
-                        .with_scale(Vec3::new(48.0, 48.0, 1.0)),
+                        .with_scale(Vec3::new(scale_px, scale_px, 1.0)),
                     world_layer.clone(),
                 ));
             });
@@ -2631,7 +3039,34 @@ fn decorate_added_turret_projectiles(
     let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
     for (entity, proj) in &added {
         let flip_x = proj.velocity.x < 0.0;
-        if proj.is_magma_wave {
+        if proj.is_cryo_wave {
+            let sp = if let Some(ref img) = vfx.magma_wave {
+                Sprite {
+                    image: img.clone(),
+                    flip_x,
+                    color: Color::linear_rgb(0.45, 2.6, 3.6),
+                    custom_size: Some(Vec2::new(30.0, 22.0)),
+                    ..default()
+                }
+            } else {
+                Sprite {
+                    color: Color::linear_rgb(0.42, 3.8, 5.6),
+                    custom_size: Some(Vec2::new(18.0, 16.0)),
+                    ..default()
+                }
+            };
+            commands.entity(entity).insert((
+                sp,
+                PointLight2d {
+                    color: LinearRgba::new(0.28, 0.88, 1.0, 1.0),
+                    intensity: 2.6,
+                    radius: 155.0,
+                    height: 20.0,
+                    falloff: 1.4,
+                },
+                world_layer.clone(),
+            ));
+        } else if proj.is_magma_wave {
             let sp = if let Some(ref img) = vfx.magma_wave {
                 Sprite {
                     image: img.clone(),
@@ -2731,6 +3166,7 @@ fn decorate_added_blast_zones(mut commands: Commands, added: Query<&BlastZone, A
             (Vec2::new(cx, zone.min.y), Vec2::new(w, 2.0)),
         ] {
             commands.spawn((
+                StageWorldEntity,
                 Sprite {
                     color: border_color,
                     custom_size: Some(size),
@@ -3107,6 +3543,7 @@ fn spawn_and_fade_speed_afterimages(
 fn update_buster_charge_aura(
     time: Res<Time>,
     state: Res<State<AppState>>,
+    campaign: Res<CampaignState>,
     players: Query<&BusterState, With<Player>>,
     mut vfx_materials: ResMut<Assets<VfxEnergyMaterial>>,
     mut auras: Query<(
@@ -3121,9 +3558,14 @@ fn update_buster_charge_aura(
         return;
     }
     let pulse = 0.5 + 0.5 * (time.elapsed_secs() * 3.2).sin();
+    let (gr, gg, gb) = match campaign.active_diamond {
+        AspectDiamond::Rift => (0.28, 0.95, 1.35),
+        AspectDiamond::Forge => (1.45, 0.72, 0.22),
+        AspectDiamond::Stasis => (0.38, 1.05, 1.50),
+    };
     for mut glow in &mut tracking_glows {
-        // Subtle, restrained tracking aura so Levy stands out cleanly without blue wash
-        glow.color = Color::linear_rgba(0.28, 0.95, 1.35, 0.09 + 0.04 * pulse);
+        // Subtle, restrained tracking aura tinted to the active Aspect Diamond (Rift / Forge / Stasis)
+        glow.color = Color::linear_rgba(gr, gg, gb, 0.09 + 0.04 * pulse);
         glow.custom_size = Some(Vec2::new(30.0 + 2.0 * pulse, 38.0 + 2.0 * pulse));
     }
     let Ok(buster) = players.single() else {
@@ -3682,6 +4124,30 @@ fn spawn_movement_particles(
                     ));
                 }
             }
+            MovementFxKind::DiamondSwitch => {
+                for i in 0..12 {
+                    let a = (i as f32 / 12.0) * std::f32::consts::TAU;
+                    commands.spawn((
+                        HitSpark {
+                            velocity: Vec2::new(a.cos(), a.sin()) * 135.0,
+                            lifetime: 0.24,
+                            max_lifetime: 0.24,
+                        },
+                        Sprite {
+                            color: if i % 2 == 0 {
+                                Color::linear_rgb(5.2, 3.2, 0.65)
+                            } else {
+                                Color::linear_rgb(0.45, 4.2, 5.6)
+                            },
+                            custom_size: Some(Vec2::new(5.0, 5.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(ev.pos.x, ev.pos.y + 8.0, 7.4)
+                            .with_rotation(Quat::from_rotation_z(a)),
+                        world_layer.clone(),
+                    ));
+                }
+            }
         }
     }
 }
@@ -3777,6 +4243,10 @@ fn drive_enemy_fighter_visuals(
                     let rage = 0.5 + 0.5 * (time.elapsed_secs() * 14.0).sin();
                     Vec4::new(1.38 + rage * 0.45, 1.06 + rage * 0.18, 0.88, 1.0)
                 }
+                EnemyArchetype::CryoBoss if phase2 => {
+                    let rage = 0.5 + 0.5 * (time.elapsed_secs() * 14.0).sin();
+                    Vec4::new(0.82 + rage * 0.20, 1.18 + rage * 0.32, 1.42 + rage * 0.42, 1.0)
+                }
                 _ => Vec4::new(0.86, 0.86, 0.90, 1.0),
             };
             mat.data.fx_params.y = if in_hitstop {
@@ -3796,6 +4266,7 @@ fn drive_enemy_fighter_visuals(
                     EnemyArchetype::ArcaneZoner => Vec4::new(1.45 + pulse * 0.55, 1.05, 1.75 + pulse * 0.65, 1.0),
                     EnemyArchetype::ShadowAssassin => Vec4::new(1.70 + pulse * 0.55, 0.95, 1.45 + pulse * 0.45, 1.0),
                     EnemyArchetype::FoundryBoss => Vec4::new(1.90 + pulse * 0.75, 1.25 + pulse * 0.35, 0.72, 1.0),
+                    EnemyArchetype::CryoBoss => Vec4::new(0.75 + pulse * 0.35, 1.50 + pulse * 0.55, 1.95 + pulse * 0.65, 1.0),
                     _ => Vec4::new(1.75 + pulse * 0.60, 1.18 + pulse * 0.28, 0.78, 1.0),
                 }
             } else if invuln.is_some_and(Invulnerable::is_active) {
@@ -3839,12 +4310,13 @@ fn drive_enemy_fighter_visuals(
         } else {
             match fighter.state {
                 EnemyAiState::Attacking { .. } => {
-                    let clip = if fighter.archetype == EnemyArchetype::FoundryBoss {
+                    let clip = if fighter.archetype.is_boss() {
                         match fighter.attack_variant {
                             0 => "f_smash",
                             1 => "down_special",
                             2 => "neutral_special",
                             6 => "sword_spin",
+                            7 => "up_tilt",
                             _ => "side_special",
                         }
                     } else {
@@ -3928,6 +4400,7 @@ fn update_enemy_health_bars(
 fn update_stage_feature_visuals(
     time: Res<Time>,
     state: Res<State<AppState>>,
+    campaign: Res<CampaignState>,
     beacons: Query<&CheckpointBeacon>,
     beams: Query<&TimedHazardBeam>,
     walls: Query<&BreakableWall>,
@@ -3955,6 +4428,7 @@ fn update_stage_feature_visuals(
         return;
     }
     let t = time.elapsed_secs();
+    let is_cryo = campaign.active_stage == StageId::Stage2Cryo;
 
     // 1. Checkpoint Beacons: warm amber idle -> blazing pulsing electric cyan when activated!
     for (vis, mut sprite, mut light) in &mut beacon_vis {
@@ -4001,36 +4475,56 @@ fn update_stage_feature_visuals(
                 tf.scale = Vec3::new((vis.size.x * 0.9).max(16.0), vis.size.y, 1.0);
                 mat.data.params0.w = 0.95;
                 mat.data.params1.z = 1.0; // Telegraph dashed sightline mode!
-                mat.data.color_a = Vec4::new(5.4, 3.2, 0.45, 0.92);
-                mat.data.color_b = Vec4::new(5.8, 5.2, 3.0, 1.0);
-                light.color = LinearRgba::new(1.0, 0.65, 0.18, 1.0);
+                if is_cryo {
+                    mat.data.color_a = Vec4::new(0.45, 3.8, 5.6, 0.92);
+                    mat.data.color_b = Vec4::new(4.4, 5.6, 5.8, 1.0);
+                    light.color = LinearRgba::new(0.28, 0.88, 1.0, 1.0);
+                } else {
+                    mat.data.color_a = Vec4::new(5.4, 3.2, 0.45, 0.92);
+                    mat.data.color_b = Vec4::new(5.8, 5.2, 3.0, 1.0);
+                    light.color = LinearRgba::new(1.0, 0.65, 0.18, 1.0);
+                }
                 light.intensity = 1.4 * flash;
             }
             HazardBeamPhase::Active => {
                 let w = (vis.size.x * 1.75).max(28.0) * (0.94 + 0.10 * flash);
                 tf.scale = Vec3::new(w, vis.size.y, 1.0);
                 mat.data.params0.w = 1.25;
-                mat.data.params1.z = 0.0; // Full roaring plasma beam!
-                mat.data.color_a = Vec4::new(5.2, 1.15 + 0.4 * flash, 0.30, 0.98);
-                mat.data.color_b = Vec4::new(5.8, 5.0, 2.8, 1.0);
-                light.color = LinearRgba::new(1.0, 0.30, 0.15, 1.0);
+                mat.data.params1.z = 0.0; // Full roaring plasma / cryo nitrogen jet!
+                if is_cryo {
+                    mat.data.color_a = Vec4::new(0.35 + 0.3 * flash, 3.6, 5.6, 0.98);
+                    mat.data.color_b = Vec4::new(4.6, 5.7, 5.8, 1.0);
+                    light.color = LinearRgba::new(0.24, 0.86, 1.0, 1.0);
+                } else {
+                    mat.data.color_a = Vec4::new(5.2, 1.15 + 0.4 * flash, 0.30, 0.98);
+                    mat.data.color_b = Vec4::new(5.8, 5.0, 2.8, 1.0);
+                    light.color = LinearRgba::new(1.0, 0.30, 0.15, 1.0);
+                }
                 light.intensity = 2.9;
             }
         }
     }
 
-    // 4. Breakable Walls: fracture cracks glow hotter as HP drops!
+    // 4. Breakable Walls: fracture cracks glow hotter (or frostier in Cryo) as HP drops!
     let pulse = 0.7 + 0.3 * (t * 14.0).sin();
     for (vis, mut sprite) in &mut wall_cracks {
         let Ok(wall) = walls.get(vis.owner) else {
             continue;
         };
         let dmg = 1.0 - wall.hp_ratio();
-        sprite.color = Color::linear_rgb(
-            (4.4 + dmg * 1.4) * pulse,
-            (1.6 + dmg * 2.2) * pulse,
-            0.3 + dmg * 0.9,
-        );
+        sprite.color = if is_cryo {
+            Color::linear_rgb(
+                (0.45 + dmg * 2.2) * pulse,
+                (3.4 + dmg * 1.6) * pulse,
+                (5.2 + dmg * 0.6) * pulse,
+            )
+        } else {
+            Color::linear_rgb(
+                (4.4 + dmg * 1.4) * pulse,
+                (1.6 + dmg * 2.2) * pulse,
+                0.3 + dmg * 0.9,
+            )
+        };
     }
 }
 
@@ -4066,28 +4560,35 @@ fn update_ground_contact_shadows_and_molten_fx(
 
     for (flow, mut tf, mut sprite) in &mut flows {
         if flow.is_lava_horizon {
-            // Subtle dimmed boiling wave sway along the background abyss (non-blooming)
             let wave_x = (t * 1.4).sin() * 14.0;
             let wave_y = (t * 2.6).cos() * 1.5;
             let glow = 0.92 + 0.08 * (t * 3.8).sin();
             tf.translation.x = (flow.base_pos.x + wave_x).round();
             tf.translation.y = (flow.base_pos.y + wave_y).round();
-            sprite.color = Color::srgba(0.66 * glow, 0.48 * glow, 0.35 * glow, 0.90);
+            sprite.color = if flow.is_cryo {
+                Color::srgba(0.56 * glow, 0.76 * glow, 0.92 * glow, 0.86)
+            } else {
+                Color::srgba(0.66 * glow, 0.48 * glow, 0.35 * glow, 0.90)
+            };
         } else {
-            // Subtle atmospheric background liquid-metal waterfall shimmer (non-blooming)
             let shimmer = 0.90 + 0.10 * (t * 6.5 + flow.phase).sin();
             let sway = (t * 2.2 + flow.phase).sin() * 1.0;
             tf.translation.x = (flow.base_pos.x + sway).round();
-            sprite.color = Color::srgba(0.62 * shimmer, 0.46 * shimmer, 0.34 * shimmer, 0.58);
+            sprite.color = if flow.is_cryo {
+                Color::srgba(0.52 * shimmer, 0.76 * shimmer, 0.92 * shimmer, 0.52)
+            } else {
+                Color::srgba(0.62 * shimmer, 0.46 * shimmer, 0.34 * shimmer, 0.58)
+            };
         }
     }
 }
 
-/// Spawns subtle rising molten Foundry ember motes near the active camera for rich atmospheric depth!
+/// Spawns subtle rising Foundry ember motes (Stage 1) OR drifting Cryo frost flakes (Stage 2)!
 fn spawn_ambient_foundry_embers(
     mut commands: Commands,
     time: Res<Time>,
     state: Res<State<AppState>>,
+    campaign: Res<CampaignState>,
     mut embers: ResMut<AmbientEmberTimer>,
     cameras: Query<&Transform, With<PixelWorldCamera>>,
 ) {
@@ -4098,25 +4599,40 @@ fn spawn_ambient_foundry_embers(
     if embers.timer > 0.0 {
         return;
     }
-    embers.timer = 0.18;
+    let is_cryo = campaign.active_stage == StageId::Stage2Cryo;
+    embers.timer = if is_cryo { 0.14 } else { 0.18 };
     embers.seed = embers.seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
 
     let Ok(cam_tf) = cameras.single() else {
         return;
     };
     let rx = ((embers.seed & 0xFFFF) as f32 / 65535.0) * 600.0 - 300.0;
-    let ry = (((embers.seed >> 16) & 0xFFFF) as f32 / 65535.0) * 90.0 - 175.0;
-    let pos = Vec2::new(cam_tf.translation.x + rx, cam_tf.translation.y + ry);
-    let color = if embers.seed.is_multiple_of(3) {
-        Color::linear_rgba(0.4, 3.2, 4.8, 0.75)
+    let ry_raw = ((embers.seed >> 16) & 0xFFFF) as f32 / 65535.0;
+    let (pos, vel, color) = if is_cryo {
+        // Gentle drifting sub-zero snowflakes & nitrogen vapor crystals descending from ceiling!
+        let pos = Vec2::new(cam_tf.translation.x + rx, cam_tf.translation.y + 165.0 + ry_raw * 30.0);
+        let vel = Vec2::new(-18.0 + (rx * 0.06).clamp(-14.0, 14.0), -26.0 - (embers.seed % 22) as f32);
+        let col = if embers.seed.is_multiple_of(3) {
+            Color::linear_rgba(0.55, 2.8, 4.4, 0.72)
+        } else {
+            Color::srgba(0.84, 0.94, 1.0, 0.75)
+        };
+        (pos, vel, col)
     } else {
-        Color::linear_rgba(4.8, 1.9, 0.35, 0.80)
+        let pos = Vec2::new(cam_tf.translation.x + rx, cam_tf.translation.y + ry_raw * 90.0 - 175.0);
+        let vel = Vec2::new((rx * 0.08).clamp(-18.0, 18.0), 34.0 + (embers.seed % 26) as f32);
+        let col = if embers.seed.is_multiple_of(3) {
+            Color::linear_rgba(0.4, 3.2, 4.8, 0.75)
+        } else {
+            Color::linear_rgba(4.8, 1.9, 0.35, 0.80)
+        };
+        (pos, vel, col)
     };
     commands.spawn((
         HitSpark {
-            velocity: Vec2::new((rx * 0.08).clamp(-18.0, 18.0), 34.0 + (embers.seed % 26) as f32),
-            lifetime: 1.45,
-            max_lifetime: 1.45,
+            velocity: vel,
+            lifetime: 1.55,
+            max_lifetime: 1.55,
         },
         Sprite {
             color,
@@ -4347,6 +4863,7 @@ fn handle_blast_zone_ko_flash(
 /// eruptions, golden Aegis Counter starbursts, and pixel-art spark bursts!
 fn handle_combat_visual_events(
     mut commands: Commands,
+    campaign: Res<CampaignState>,
     vfx: Res<VfxArtAssets>,
     shared_quad: Res<SharedVfxQuadMesh>,
     mut vfx_materials: ResMut<Assets<VfxEnergyMaterial>>,
@@ -4354,6 +4871,7 @@ fn handle_combat_visual_events(
     mut shake: ResMut<CameraShake>,
 ) {
     let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
+    let is_cryo = campaign.active_stage == StageId::Stage2Cryo;
 
     let spawn_ring = |commands: &mut Commands,
                       vfx_materials: &mut Assets<VfxEnergyMaterial>,
@@ -4646,9 +5164,14 @@ fn handle_combat_visual_events(
                 target_dir,
                 duration,
             } => {
-                // GPU-shader dashed amber-gold aiming sightlines + swirling weapon charge vortex before Vulcanus fires!
+                // GPU-shader dashed aiming sightlines + swirling charge vortex (molten gold for Vulcanus, glacial cyan for Borealis!)
                 let base_angle = target_dir.y.atan2(target_dir.x);
                 let beam_len = 290.0;
+                let (sight_a, sight_b) = if is_cryo {
+                    (Vec4::new(0.42, 3.8, 5.6, 0.95), Vec4::new(4.2, 5.6, 5.8, 1.0))
+                } else {
+                    (Vec4::new(5.4, 3.2, 0.45, 0.95), Vec4::new(5.8, 5.2, 3.0, 1.0))
+                };
                 for spread in [-0.30_f32, 0.0, 0.30] {
                     let a = base_angle + spread;
                     let dir = Vec2::new(a.cos(), a.sin());
@@ -4657,8 +5180,8 @@ fn handle_combat_visual_events(
                         data: VfxEnergyUniform {
                             params0: Vec4::new(vfx_mode::PLASMA_BEAM, 0.0, 0.0, 1.1),
                             params1: Vec4::new(14.0, 1.0, 1.0, 1.0), // Telegraph sightline mode!
-                            color_a: Vec4::new(5.4, 3.2, 0.45, 0.95),
-                            color_b: Vec4::new(5.8, 5.2, 3.0, 1.0),
+                            color_a: sight_a,
+                            color_b: sight_b,
                         },
                     });
                     commands.spawn((
@@ -4682,8 +5205,8 @@ fn handle_combat_visual_events(
                     data: VfxEnergyUniform {
                         params0: Vec4::new(vfx_mode::CHARGE_VORTEX, 0.0, 1.0, 1.3),
                         params1: Vec4::new(1.0, 1.0, 0.0, 1.0),
-                        color_a: Vec4::new(5.4, 2.8, 0.45, 0.95),
-                        color_b: Vec4::new(5.8, 5.4, 3.4, 1.0),
+                        color_a: sight_a,
+                        color_b: sight_b,
                     },
                 });
                 commands.spawn((
@@ -4996,11 +5519,12 @@ fn update_follow_camera(
     spawn_point: Res<PlayerSpawnPoint>,
     enc_status: Res<EncounterStatus>,
     mut restarts: MessageReader<StageRestartEvent>,
+    mut switches: MessageReader<StageSwitchEvent>,
     mut shake: ResMut<CameraShake>,
     players: Query<&KinematicBody, With<Player>>,
     mut cameras: Query<(&mut PixelWorldCamera, &mut Transform)>,
 ) {
-    if restarts.read().next().is_some() {
+    if restarts.read().next().is_some() || switches.read().next().is_some() {
         let snap = spawn_point.0 + Vec2::new(50.0, 26.0);
         shake.trauma = 0.0;
         for (mut cam, mut transform) in &mut cameras {

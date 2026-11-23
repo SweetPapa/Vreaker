@@ -41,6 +41,15 @@ ROSTER = {
         "ortho_scale": 4.20,
         "quantize": 56,
     },
+    "borealis": {
+        "raw_glb": "raw_assets/characters/borealis_hq.glb",
+        "rigged_glb": "raw_assets/characters/borealis_rigged.glb",
+        "preset": "borealis",
+        "slot": "borealis",
+        "size": 144,
+        "ortho_scale": 4.15,
+        "quantize": 56,
+    },
     "strider_drone": {
         "raw_glb": "raw_assets/characters/strider_drone_hq.glb",
         "rigged_glb": "raw_assets/characters/strider_drone_rigged.glb",

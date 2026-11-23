@@ -26,8 +26,8 @@ use crate::state::AppState;
 
 pub use geometry::{
     BoostPad, BreakableWall, CheckpointBeacon, CollectibleItem, CollectibleKind, GroundHit,
-    HazardBeamPhase, JumpPad, MAX_WALKABLE_SLOPE_COS, MovingPlatform, OneWayPlatform, SlopeSegment,
-    SolidRect, SpikeHazard, TimedHazardBeam,
+    HazardBeamPhase, IceSurface, JumpPad, MAX_WALKABLE_SLOPE_COS, MovingPlatform, OneWayPlatform,
+    SlopeSegment, SolidRect, SpikeHazard, TimedHazardBeam,
 };
 pub use loop_spline::{LoopSpline, SplineSample};
 
@@ -53,6 +53,7 @@ pub enum MovementFxKind {
     SpotDodge,
     FastFall,
     Taunt,
+    DiamondSwitch,
 }
 
 /// Message emitted on crisp kinematic & defensive state transitions.
@@ -193,6 +194,7 @@ pub struct PlayerIntent {
     pub buster_just_pressed: bool,
     pub buster_held: bool,
     pub taunt_just_pressed: bool,
+    pub cycle_diamond_just_pressed: bool,
     prev_down_held: bool,
     prev_left_held: bool,
     prev_right_held: bool,
@@ -206,6 +208,7 @@ pub struct PlayerIntent {
     prev_special_held: bool,
     prev_buster_held: bool,
     prev_taunt_held: bool,
+    prev_cycle_diamond_held: bool,
 }
 
 /// Marker opting an entity out of Leafwing action-state copying so headless simulation
@@ -250,6 +253,8 @@ pub struct KinematicBody {
     pub jump_cut_applied: bool,
     /// Whether the player is currently standing on a one-way platform.
     pub on_one_way: bool,
+    /// Whether the body is currently standing on a low-friction Mirror-Ice [`IceSurface`].
+    pub on_ice: bool,
     /// Periodic visual/audio rev pulse timer while Spin Charging.
     pub spin_rev_fx_timer: f32,
     /// Remaining mid-air Smash double jumps (refreshes to `1` on landing or wall-slide).
@@ -276,6 +281,7 @@ impl Default for KinematicBody {
             loop_exit_cooldown: 0.0,
             jump_cut_applied: false,
             on_one_way: false,
+            on_ice: false,
             spin_rev_fx_timer: 0.0,
             air_jumps_remaining: 0,
         }
@@ -394,6 +400,7 @@ fn sync_player_intent_from_actions(
             intent.buster_just_pressed = false;
             intent.buster_held = false;
             intent.taunt_just_pressed = false;
+            intent.cycle_diamond_just_pressed = false;
         }
         return;
     }
@@ -527,6 +534,7 @@ fn sync_player_intent_from_actions(
         let special_held = actions.pressed(&PlayerAction::Special);
         let buster_held = actions.pressed(&PlayerAction::Buster);
         let taunt_held = actions.pressed(&PlayerAction::Taunt);
+        let cycle_diamond_held = actions.pressed(&PlayerAction::CycleDiamond);
 
         // Edge-detect strictly inside FixedUpdate so multi-tick render frames can NEVER double-fire an action!
         intent.move_axis = axis;
@@ -553,6 +561,7 @@ fn sync_player_intent_from_actions(
         intent.buster_just_pressed = buster_held && !intent.prev_buster_held;
         intent.buster_held = buster_held;
         intent.taunt_just_pressed = taunt_held && !intent.prev_taunt_held;
+        intent.cycle_diamond_just_pressed = cycle_diamond_held && !intent.prev_cycle_diamond_held;
 
         intent.prev_down_held = down_held;
         intent.prev_left_held = left_held;
@@ -567,6 +576,7 @@ fn sync_player_intent_from_actions(
         intent.prev_special_held = special_held;
         intent.prev_buster_held = buster_held;
         intent.prev_taunt_held = taunt_held;
+        intent.prev_cycle_diamond_held = cycle_diamond_held;
     }
 }
 
@@ -633,8 +643,8 @@ fn advance_moving_platforms(
 pub fn step_kinematic_physics(
     fixed_time: Res<Time<Fixed>>,
     config: Res<PhysicsConfig>,
-    solids_q: Query<&SolidRect>,
-    slopes_q: Query<&SlopeSegment>,
+    solids_q: Query<(&SolidRect, Has<IceSurface>)>,
+    slopes_q: Query<(&SlopeSegment, Has<IceSurface>)>,
     one_ways_q: Query<&OneWayPlatform>,
     boost_pads_q: Query<&BoostPad>,
     jump_pads_q: Query<&JumpPad>,
@@ -665,8 +675,18 @@ pub fn step_kinematic_physics(
         return;
     }
 
-    let solids: Vec<SolidRect> = solids_q.iter().copied().collect();
-    let slopes: Vec<SlopeSegment> = slopes_q.iter().copied().collect();
+    let mut solids: Vec<SolidRect> = Vec::new();
+    let mut solid_ice: Vec<bool> = Vec::new();
+    for (&rect, is_ice) in &solids_q {
+        solids.push(rect);
+        solid_ice.push(is_ice);
+    }
+    let mut slopes: Vec<SlopeSegment> = Vec::new();
+    let mut slope_ice: Vec<bool> = Vec::new();
+    for (&slope, is_ice) in &slopes_q {
+        slopes.push(slope);
+        slope_ice.push(is_ice);
+    }
     let one_ways: Vec<OneWayPlatform> = one_ways_q.iter().copied().collect();
     let boost_pads: Vec<BoostPad> = boost_pads_q.iter().copied().collect();
     let jump_pads: Vec<JumpPad> = jump_pads_q.iter().copied().collect();
@@ -717,7 +737,9 @@ pub fn step_kinematic_physics(
                 dt,
                 &config,
                 &solids,
+                &solid_ice,
                 &slopes,
+                &slope_ice,
                 &one_ways,
                 &boost_pads,
                 &jump_pads,
@@ -906,7 +928,9 @@ fn step_single_body(
     dt: f32,
     cfg: &PhysicsConfig,
     solids: &[SolidRect],
+    solid_ice: &[bool],
     slopes: &[SlopeSegment],
+    slope_ice: &[bool],
     one_ways: &[OneWayPlatform],
     boost_pads: &[BoostPad],
     jump_pads: &[JumpPad],
@@ -1290,32 +1314,47 @@ fn step_single_body(
     if was_grounded {
         // Slope inclination theta (> 0 uphill right, < 0 downhill right)
         let theta = (-body.ground_normal.x).atan2(body.ground_normal.y);
+        // Low-friction Mirror-Ice tuning (Stage 2: Cryo Conduit): silky momentum slides,
+        // wider turn drifts, higher top speed, and supercharged downhill ice chutes!
+        let (ice_friction, ice_turn, ice_accel, ice_speed_mult, ice_slope_mult) = if body.on_ice {
+            (0.20_f32, 0.30_f32, 0.78_f32, 1.18_f32, 1.55_f32)
+        } else {
+            (1.0, 1.0, 1.0, 1.0, 1.0)
+        };
 
         if shielding {
-            body.ground_speed = move_toward(body.ground_speed, 0.0, cfg.ground_turn_decel * 1.4 * dt);
+            body.ground_speed = move_toward(
+                body.ground_speed,
+                0.0,
+                cfg.ground_turn_decel * 1.4 * ice_turn * dt,
+            );
             let tangent = Vec2::new(theta.cos(), theta.sin());
             body.velocity = tangent * body.ground_speed;
         } else {
-            // Apply Sonic slope gravity: a = -g * sin(theta)
-            let slope_accel = -cfg.gravity * theta.sin() * cfg.slope_gravity_mult;
+            // Apply Sonic slope gravity: a = -g * sin(theta) (boosted on downhill ice chutes!)
+            let slope_accel = -cfg.gravity * theta.sin() * cfg.slope_gravity_mult * ice_slope_mult;
             body.ground_speed += slope_accel * dt;
 
-            let target_max = if intent.boost_held {
+            let target_max = (if intent.boost_held {
                 cfg.sprint_max_speed
             } else {
                 cfg.run_max_speed
-            };
-            let accel = if intent.boost_held {
+            }) * ice_speed_mult;
+            let accel = (if intent.boost_held {
                 cfg.boost_accel
             } else {
                 cfg.ground_accel
-            };
+            }) * ice_accel;
 
             if move_x != 0.0 {
                 let input_dir = move_x.signum();
                 if body.ground_speed != 0.0 && body.ground_speed.signum() != input_dir {
-                    // Crisp turn/skid deceleration
-                    body.ground_speed = move_toward(body.ground_speed, 0.0, cfg.ground_turn_decel * dt);
+                    // Crisp turn/skid deceleration (long gliding power-slides on Mirror-Ice!)
+                    body.ground_speed = move_toward(
+                        body.ground_speed,
+                        0.0,
+                        cfg.ground_turn_decel * ice_turn * dt,
+                    );
                 } else {
                     // Accelerate up to target_max without artificially clamping downhill/boost overspeed
                     let desired = move_x * target_max;
@@ -1327,15 +1366,22 @@ fn step_single_body(
                 }
             } else if theta.abs() < 0.05 {
                 // Flat ground friction: NEVER auto-run forward when move_x == 0 (even if boost/RT is held!)
-                body.ground_speed = move_toward(body.ground_speed, 0.0, cfg.ground_friction * dt);
+                body.ground_speed = move_toward(
+                    body.ground_speed,
+                    0.0,
+                    cfg.ground_friction * ice_friction * dt,
+                );
             } else {
                 // Minimal rolling drag on slopes so Sonic downhill gravity builds momentum briskly
-                body.ground_speed = move_toward(body.ground_speed, 0.0, cfg.ground_friction * 0.08 * dt);
+                body.ground_speed = move_toward(
+                    body.ground_speed,
+                    0.0,
+                    cfg.ground_friction * 0.08 * ice_friction * dt,
+                );
             }
 
-            body.ground_speed = body
-                .ground_speed
-                .clamp(-cfg.sprint_max_speed * 1.25, cfg.sprint_max_speed * 1.25);
+            let abs_cap = cfg.sprint_max_speed * if body.on_ice { 1.38 } else { 1.25 };
+            body.ground_speed = body.ground_speed.clamp(-abs_cap, abs_cap);
 
             let tangent = Vec2::new(theta.cos(), theta.sin());
             body.velocity = tangent * body.ground_speed;
@@ -1428,7 +1474,7 @@ fn step_single_body(
 
     // 9. Cast dual downward foot sensors for ground / slope / one-way platform snap
     let drop_active = body.drop_through_timer > 0.0;
-    if let Some(hit) = geometry::cast_dual_foot_sensors(
+    if let Some(hit) = geometry::cast_dual_foot_sensors_with_ice(
         body.position,
         body.half_extents,
         prev_feet_y,
@@ -1436,12 +1482,15 @@ fn step_single_body(
         was_grounded,
         drop_active,
         solids,
+        solid_ice,
         slopes,
+        slope_ice,
         one_ways,
     ) {
         body.position.y = hit.surface_y + body.half_extents.y;
         body.ground_normal = hit.normal;
         body.on_one_way = hit.is_one_way;
+        body.on_ice = hit.is_ice;
 
         let theta = (-hit.normal.x).atan2(hit.normal.y);
         body.visual_angle = theta;
@@ -1474,6 +1523,7 @@ fn step_single_body(
             body.velocity.x = body.ground_speed * hit.normal.y.max(0.75);
             body.state = MovementState::Airborne;
             body.on_one_way = false;
+            body.on_ice = false;
             body.coyote_timer = 0.0;
             body.jump_buffer_timer = 0.0;
             body.jump_cut_applied = false;
@@ -1491,6 +1541,7 @@ fn step_single_body(
         if was_grounded {
             body.coyote_timer = cfg.coyote_time;
             body.on_one_way = false;
+            body.on_ice = false;
         }
         body.ground_normal = Vec2::Y;
         body.visual_angle = move_toward(body.visual_angle, 0.0, 10.0 * dt);

@@ -309,8 +309,13 @@ pub fn cast_dual_foot_sensors(
     best
 }
 
-/// Resolves horizontal overlap against solid AABB walls, returning `(new_x, hit_wall_dir)`.
+/// Resolves horizontal overlap against solid AABB walls using separated-axis swept bounds
+/// (`prev_x` -> `pos.x`), returning `(new_x, hit_wall_dir)`.
+///
+/// Crucially ignores `SolidRect`s that the body was already spanning horizontally (e.g. a wide
+/// floor beneath a falling body) so vertical landings can NEVER eject a fighter horizontally.
 pub fn resolve_horizontal_solids(
+    prev_x: f32,
     pos: Vec2,
     half_extents: Vec2,
     solids: &[SolidRect],
@@ -328,7 +333,24 @@ pub fn resolve_horizontal_solids(
             continue;
         }
         let overlap = (half_extents.x + rect.half_extents.x) - (x - rect.center.x).abs();
-        if overlap > 0.0 {
+        if overlap <= 0.0 {
+            continue;
+        }
+
+        // Only push out horizontally if the body approached from outside the left or right face
+        // (small 6px margin allows minor sub-step / moving-platform seam resolution without
+        // ever teleporting a body across a wide floor).
+        let came_from_left = prev_x + half_extents.x <= min.x + 6.0;
+        let came_from_right = prev_x - half_extents.x >= max.x - 6.0;
+
+        if came_from_left {
+            x = min.x - half_extents.x;
+            hit_dir = Some(1);
+        } else if came_from_right {
+            x = max.x + half_extents.x;
+            hit_dir = Some(-1);
+        } else if overlap <= 8.0 {
+            // Shallow lateral penetration (e.g., thin wall contact): push out via nearest edge
             if x < rect.center.x {
                 x = min.x - half_extents.x;
                 hit_dir = Some(1);

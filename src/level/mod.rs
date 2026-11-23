@@ -1,15 +1,17 @@
 //! LDtk level loading (`assets/levels/demo_gym.ldtk`) via `bevy_ecs_ldtk` with
-//! full entity hydration (solids, slopes, 360° loops, boost pads, drop-throughs,
-//! moving platforms, spike hazards, wall turrets, AI fighters, and Smash blast zones)
-//! plus clean stage restart handling.
+//! full entity hydration (solids, slopes, boost pads, drop-throughs, moving platforms,
+//! spike hazards, wall turrets, progression enemies, Lockdown Ambush Arenas, End Boss,
+//! and Blast Zones) plus clean stage restart handling.
 
 use bevy::prelude::*;
 use bevy_ecs_ldtk::prelude::*;
 
-use crate::combat::{BusterProjectile, DamagePercent, Hitbox, LastHitTelemetry};
+use crate::combat::{
+    BreakerWaveProjectile, BusterProjectile, DamagePercent, Hitbox, LastHitTelemetry,
+};
 use crate::enemies::{
-    BlastZone, EnemyArchetype, EnemyFighter, PendingEnemyRespawn, TurretProjectile, WallTurret,
-    spawn_enemy_fighter, spawn_wall_turret,
+    BlastZone, EncounterPhase, EnemyArchetype, EnemyFighter, LockdownEncounter, LockdownGate,
+    PendingEnemyRespawn, TurretProjectile, WallTurret, spawn_stage_enemy, spawn_wall_turret,
 };
 use crate::physics::{
     BoostPad, LoopSpline, MovingPlatform, OneWayPlatform, SlopeSegment, SolidRect, SpikeHazard,
@@ -27,6 +29,7 @@ pub const LDTK_ORIGIN_Y: f32 = -260.0;
 pub struct StageDynamicSpawns {
     pub enemies: Vec<(EnemyArchetype, Vec2)>,
     pub turrets: Vec<(Vec2, f32)>,
+    pub encounters: Vec<LockdownEncounter>,
 }
 
 /// Plugin wiring `bevy_ecs_ldtk` level loading (`assets/levels/demo_gym.ldtk`),
@@ -50,7 +53,7 @@ impl Plugin for LevelPlugin {
 fn spawn_demo_gym_ldtk_world(mut commands: Commands, asset_server: Res<AssetServer>) {
     let ldtk_handle = asset_server.load("levels/demo_gym.ldtk").into();
     commands.spawn((
-        Name::new("FoundryGymLdtkWorld"),
+        Name::new("FoundryCitadelLdtkWorld"),
         LdtkWorldBundle {
             ldtk_handle,
             ..default()
@@ -84,8 +87,91 @@ fn int_field(entity: &EntityInstance, name: &str, default: i32) -> i32 {
     entity.get_int_field(name).copied().unwrap_or(default)
 }
 
+fn string_field<'a>(entity: &'a EntityInstance, name: &str, default: &'a str) -> &'a str {
+    entity
+        .get_string_field(name)
+        .map(String::as_str)
+        .unwrap_or(default)
+}
+
+fn parse_archetype(s: &str) -> EnemyArchetype {
+    if s.eq_ignore_ascii_case("heavy") || s.eq_ignore_ascii_case("brawler") {
+        EnemyArchetype::HeavyBrawler
+    } else if s.eq_ignore_ascii_case("mage")
+        || s.eq_ignore_ascii_case("arcanist")
+        || s.eq_ignore_ascii_case("arcane")
+    {
+        EnemyArchetype::ArcaneZoner
+    } else if s.eq_ignore_ascii_case("assassin") || s.eq_ignore_ascii_case("shadow") {
+        EnemyArchetype::ShadowAssassin
+    } else if s.eq_ignore_ascii_case("boss") || s.eq_ignore_ascii_case("vulcanus") {
+        EnemyArchetype::FoundryBoss
+    } else {
+        EnemyArchetype::LightStriker
+    }
+}
+
+/// Builds the scripted multi-wave enemy formations for each Lockdown Ambush / Boss Chamber.
+fn build_encounter_waves(
+    preset: &str,
+    min_x: f32,
+    max_x: f32,
+    floor_y: f32,
+) -> (bool, bool, Vec<Vec<(EnemyArchetype, Vec2)>>) {
+    let cx = (min_x + max_x) * 0.5;
+    match preset {
+        "smelter_cage" => (
+            false,
+            true,
+            vec![
+                // Wave 1: Surround from left, right, and top Smash platforms!
+                vec![
+                    (EnemyArchetype::LightStriker, Vec2::new(min_x + 115.0, floor_y + 84.0)),
+                    (EnemyArchetype::ShadowAssassin, Vec2::new(max_x - 115.0, floor_y + 84.0)),
+                    (EnemyArchetype::ArcaneZoner, Vec2::new(cx, floor_y + 150.0)),
+                ],
+                // Wave 2: Heavy Brawler center drop + flanking Assassin & Arcanist!
+                vec![
+                    (EnemyArchetype::HeavyBrawler, Vec2::new(cx, floor_y + 24.0)),
+                    (EnemyArchetype::ShadowAssassin, Vec2::new(min_x + 115.0, floor_y + 84.0)),
+                    (EnemyArchetype::ArcaneZoner, Vec2::new(max_x - 115.0, floor_y + 84.0)),
+                ],
+            ],
+        ),
+        "forge_gauntlet" => (
+            false,
+            true,
+            vec![
+                // Single tighter, higher-intensity elite ambush wave building cleanly into Vulcanus!
+                vec![
+                    (EnemyArchetype::HeavyBrawler, Vec2::new(cx, floor_y + 24.0)),
+                    (EnemyArchetype::ShadowAssassin, Vec2::new(min_x + 110.0, floor_y + 148.0)),
+                    (EnemyArchetype::ArcaneZoner, Vec2::new(max_x - 110.0, floor_y + 148.0)),
+                    (EnemyArchetype::LightStriker, Vec2::new(max_x - 90.0, floor_y + 84.0)),
+                ],
+            ],
+        ),
+        "vulcanus_boss" => (
+            true,
+            false, // Right side is the solid Foundry Citadel fortress wall
+            vec![vec![(
+                EnemyArchetype::FoundryBoss,
+                Vec2::new(max_x - 140.0, floor_y + 34.0),
+            )]],
+        ),
+        _ => (
+            false,
+            true,
+            vec![vec![
+                (EnemyArchetype::LightStriker, Vec2::new(min_x + 110.0, floor_y + 24.0)),
+                (EnemyArchetype::ArcaneZoner, Vec2::new(max_x - 110.0, floor_y + 84.0)),
+            ]],
+        ),
+    }
+}
+
 /// Hydrates every newly loaded (or hot-reloaded) LDtk [`EntityInstance`] into
-/// deterministic physics, combat, enemy, and blast-zone ECS components.
+/// deterministic physics, combat, enemy, encounter, and blast-zone ECS components.
 fn hydrate_ldtk_entities(
     mut commands: Commands,
     mut spawn_point: ResMut<PlayerSpawnPoint>,
@@ -171,17 +257,40 @@ fn hydrate_ldtk_entities(
                 spawn_wall_turret(&mut commands, center, facing);
             }
             "EnemySpawn" => {
-                let kind_str = inst
-                    .get_string_field("archetype")
-                    .map(String::as_str)
-                    .unwrap_or("light");
-                let archetype = if kind_str.eq_ignore_ascii_case("heavy") {
-                    EnemyArchetype::HeavyBrawler
-                } else {
-                    EnemyArchetype::LightStriker
-                };
+                let kind_str = string_field(inst, "archetype", "light");
+                let archetype = parse_archetype(kind_str);
                 dynamic_spawns.enemies.push((archetype, center));
-                spawn_enemy_fighter(&mut commands, archetype, center, false);
+                spawn_stage_enemy(&mut commands, archetype, center, false, None);
+            }
+            "EncounterZone" => {
+                let id = int_field(inst, "encounter_id", 1).max(1) as u32;
+                let title = string_field(inst, "title", "AMBUSH LOCKDOWN").to_string();
+                let preset = string_field(inst, "preset", "smelter_cage");
+                let trigger_x = float_field(inst, "trigger_x", min.x + 85.0);
+                let floor_y = float_field(inst, "floor_y", min.y);
+                let (is_boss, spawn_right_gate, waves) =
+                    build_encounter_waves(preset, min.x, max.x, floor_y);
+                let encounter = LockdownEncounter {
+                    id,
+                    title,
+                    is_boss,
+                    trigger_x,
+                    min_x: min.x,
+                    max_x: max.x,
+                    floor_y,
+                    arena_center: Vec2::new((min.x + max.x) * 0.5, floor_y + 92.0),
+                    spawn_right_gate,
+                    waves,
+                    current_wave: 0,
+                    phase: EncounterPhase::Idle,
+                    active_enemies: Vec::new(),
+                    gate_entities: Vec::new(),
+                };
+                dynamic_spawns.encounters.push(encounter.clone());
+                commands.spawn((Name::new(format!("EncounterZone_{id}")), encounter));
+            }
+            "BossSpawn" => {
+                // Visual marker / schema confirmation; actual Boss spawns on Vulcanus Sanctum lockdown!
             }
             "BlastZone" => {
                 let arena_center = Vec2::new(
@@ -189,7 +298,7 @@ fn hydrate_ldtk_entities(
                     float_field(inst, "arena_center_y", center.y),
                 );
                 commands.spawn((
-                    Name::new("ZoneC_BlastZone"),
+                    Name::new("StageBlastZone"),
                     BlastZone {
                         min,
                         max,
@@ -207,7 +316,7 @@ fn hydrate_ldtk_entities(
     }
 }
 
-/// Resets dynamic fighters, turrets, projectiles, moving platforms, and hit telemetry on restart.
+/// Resets dynamic fighters, turrets, encounters, gates, projectiles, moving platforms, and telemetry on restart.
 #[allow(clippy::too_many_arguments)]
 fn handle_stage_restart(
     mut commands: Commands,
@@ -219,7 +328,10 @@ fn handle_stage_restart(
     turrets_q: Query<Entity, With<WallTurret>>,
     turret_orbs_q: Query<Entity, With<TurretProjectile>>,
     buster_q: Query<Entity, With<BusterProjectile>>,
+    waves_q: Query<Entity, With<BreakerWaveProjectile>>,
     hitboxes_q: Query<Entity, With<Hitbox>>,
+    gates_q: Query<Entity, With<LockdownGate>>,
+    encounters_q: Query<Entity, With<LockdownEncounter>>,
     mut moving_q: Query<(&mut MovingPlatform, &mut OneWayPlatform, Option<&mut Transform>)>,
 ) {
     if restarts.read().next().is_none() {
@@ -234,7 +346,10 @@ fn handle_stage_restart(
         .chain(turrets_q.iter())
         .chain(turret_orbs_q.iter())
         .chain(buster_q.iter())
+        .chain(waves_q.iter())
         .chain(hitboxes_q.iter())
+        .chain(gates_q.iter())
+        .chain(encounters_q.iter())
     {
         commands.entity(e).despawn();
     }
@@ -250,10 +365,13 @@ fn handle_stage_restart(
     }
 
     for &(archetype, pos) in &dynamic_spawns.enemies {
-        spawn_enemy_fighter(&mut commands, archetype, pos, false);
+        spawn_stage_enemy(&mut commands, archetype, pos, false, None);
     }
     for &(pos, facing) in &dynamic_spawns.turrets {
         let e = spawn_wall_turret(&mut commands, pos, facing);
         commands.entity(e).insert(DamagePercent(0.0));
+    }
+    for enc in &dynamic_spawns.encounters {
+        commands.spawn((Name::new(format!("EncounterZone_{}", enc.id)), enc.clone()));
     }
 }

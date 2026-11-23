@@ -1347,7 +1347,7 @@ SpriteSheetManifest(
                 *counts.entry(ent.identifier.clone()).or_insert(0) += 1;
                 if ent.identifier == "SolidBlock" {
                     let (min, max) = ldtk_rect_to_bevy_min_max(ent);
-                    if (min.x - 800.0).abs() < 2.0 && (max.x - 828.0).abs() < 2.0 {
+                    if (min.x - 470.0).abs() < 2.0 && (max.x - 496.0).abs() < 2.0 {
                         wall_left_min_y = Some(min.y);
                     }
                 }
@@ -1355,21 +1355,25 @@ SpriteSheetManifest(
         }
 
         assert_eq!(counts.get("PlayerSpawn").copied().unwrap_or(0), 1);
-        assert_eq!(counts.get("Slope").copied().unwrap_or(0), 2);
-        assert_eq!(counts.get("BoostPad").copied().unwrap_or(0), 2);
-        assert_eq!(counts.get("LoopSpline").copied().unwrap_or(0), 1);
-        assert_eq!(counts.get("MovingPlatform").copied().unwrap_or(0), 2);
-        assert_eq!(counts.get("SpikeHazard").copied().unwrap_or(0), 2);
-        assert_eq!(counts.get("WallTurret").copied().unwrap_or(0), 2);
-        assert!(counts.get("OneWayPlatform").copied().unwrap_or(0) >= 4);
-        assert_eq!(counts.get("EnemySpawn").copied().unwrap_or(0), 2);
+        assert_eq!(
+            counts.get("LoopSpline").copied().unwrap_or(0),
+            0,
+            "360° Sonic LoopSpline must be removed from demo_gym.ldtk"
+        );
+        assert!(counts.get("MovingPlatform").copied().unwrap_or(0) >= 2);
+        assert!(counts.get("SpikeHazard").copied().unwrap_or(0) >= 2);
+        assert!(counts.get("WallTurret").copied().unwrap_or(0) >= 4);
+        assert!(counts.get("OneWayPlatform").copied().unwrap_or(0) >= 12);
+        assert!(counts.get("EnemySpawn").copied().unwrap_or(0) >= 6);
+        assert_eq!(counts.get("EncounterZone").copied().unwrap_or(0), 3);
+        assert_eq!(counts.get("BossSpawn").copied().unwrap_or(0), 1);
         assert_eq!(counts.get("BlastZone").copied().unwrap_or(0), 1);
 
-        // Verify Zone B left shaft wall leaves an open doorway from Zone A launch ramp
-        let doorway_y = wall_left_min_y.expect("Zone B left shaft wall found");
+        // Verify Zone A vertical shaft left wall leaves an open bottom doorway above y = 28 floor
+        let doorway_y = wall_left_min_y.expect("Zone A vertical shaft left wall found");
         assert!(
-            doorway_y >= 20.0,
-            "Zone B left wall must start above doorway headroom (>= 20.0), got {}",
+            doorway_y >= 110.0,
+            "Shaft left wall must leave >= 82px doorway headroom above y=28 floor, got {}",
             doorway_y
         );
     }
@@ -1706,5 +1710,2070 @@ SpriteSheetManifest(
         assert_eq!(&wav[8..12], b"WAVE");
         assert_eq!(&wav[12..16], b"fmt ");
         assert_eq!(&wav[36..40], b"data");
+    }
+
+    // -------------------------------------------------------------------------
+    // Milestone 2 — Spin Dash, Expanded Aerials, Shield, Air-Dodge, RON Data,
+    //               Combo Tracker, Speedrun Timer & Foundry Art Assets
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_spin_dash_charge_and_explosive_launch() {
+        use crate::physics::{KinematicBody, MovementState, PlayerIntent, SolidRect};
+
+        let (mut app, player) = physics_test_app(Vec2::new(0.0, 18.0));
+        app.world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-200.0, -32.0), Vec2::new(1200.0, 0.0)));
+        step_fixed_ticks(&mut app, 3);
+        assert_eq!(
+            app.world().get::<KinematicBody>(player).unwrap().state,
+            MovementState::Grounded
+        );
+
+        // Hold Down + SpinDash to charge Spin Dash in place
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.move_axis = Vec2::new(0.0, -1.0);
+            intent.boost_just_pressed = true;
+            intent.boost_held = true;
+        }
+        step_fixed_ticks(&mut app, 1);
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.boost_just_pressed = false;
+        }
+        step_fixed_ticks(&mut app, 25);
+
+        let charge = match app.world().get::<KinematicBody>(player).unwrap().state {
+            MovementState::SpinCharging { charge } => charge,
+            other => panic!("Expected MovementState::SpinCharging, got {:?}", other),
+        };
+        assert!(
+            charge > 0.70,
+            "Holding Spin Dash for ~0.43s must build strong charge, got {}",
+            charge
+        );
+
+        // Release Down & Boost -> explosive Sonic launch >= 550 px/s (clears 360° loop threshold!)
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.move_axis = Vec2::ZERO;
+            intent.boost_held = false;
+        }
+        step_fixed_ticks(&mut app, 1);
+
+        let body = app.world().get::<KinematicBody>(player).unwrap();
+        assert_eq!(body.state, MovementState::Grounded);
+        assert!(
+            body.ground_speed >= 520.0,
+            "Spin Dash release must launch cleanly above 360° loop threshold, got {}",
+            body.ground_speed
+        );
+    }
+
+    #[test]
+    fn test_up_air_and_back_air_directional_launches() {
+        use crate::combat::AttackState;
+        use crate::physics::{KinematicBody, MovementState, PlayerIntent};
+
+        // 1. Up-Air launches overhead target sharply upward
+        let (mut app, player) = physics_test_app(Vec2::new(0.0, 80.0));
+        let above = spawn_test_target(&mut app, Vec2::new(4.0, 108.0), 20.0);
+        {
+            let mut body = app.world_mut().get_mut::<KinematicBody>(player).unwrap();
+            body.state = MovementState::Airborne;
+            body.facing = 1.0;
+        }
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.move_axis = Vec2::new(0.0, 1.0);
+            intent.melee_just_pressed = true;
+        }
+        step_fixed_ticks(&mut app, 1);
+        assert_eq!(
+            app.world().get::<AttackState>(player).unwrap().active_move,
+            Some(crate::combat::AttackKind::UpAir)
+        );
+        let up_vel = app.world().get::<KinematicBody>(above).unwrap().velocity;
+        assert!(
+            up_vel.y > 190.0,
+            "Up-Air must juggle target strongly upward, got {:?}",
+            up_vel
+        );
+
+        // 2. Back-Air strikes target BEHIND hero while facing right and launches left (-X)
+        let (mut app2, player2) = physics_test_app(Vec2::new(0.0, 80.0));
+        let behind = spawn_test_target(&mut app2, Vec2::new(-28.0, 82.0), 30.0);
+        {
+            let mut body = app2.world_mut().get_mut::<KinematicBody>(player2).unwrap();
+            body.state = MovementState::Airborne;
+            body.facing = 1.0;
+        }
+        {
+            let mut intent = app2.world_mut().get_mut::<PlayerIntent>(player2).unwrap();
+            intent.move_axis = Vec2::new(-1.0, 0.0);
+            intent.melee_just_pressed = true;
+        }
+        step_fixed_ticks(&mut app2, 1);
+        assert_eq!(
+            app2.world().get::<AttackState>(player2).unwrap().active_move,
+            Some(crate::combat::AttackKind::BackAir)
+        );
+        let back_vel = app2.world().get::<KinematicBody>(behind).unwrap().velocity;
+        assert!(
+            back_vel.x < -200.0,
+            "Back-Air must launch target behind player sharply left, got {:?}",
+            back_vel
+        );
+    }
+
+    #[test]
+    fn test_grounded_shield_blocks_incoming_attack() {
+        use crate::combat::{DamagePercent, Hitbox, ShieldState, Team};
+        use crate::physics::{KinematicBody, MovementState, PlayerIntent, SolidRect};
+
+        let (mut app, player) = physics_test_app(Vec2::new(0.0, 18.0));
+        app.world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-200.0, -32.0), Vec2::new(200.0, 0.0)));
+        step_fixed_ticks(&mut app, 3);
+        assert_eq!(
+            app.world().get::<KinematicBody>(player).unwrap().state,
+            MovementState::Grounded
+        );
+
+        // Hold Guard -> ShieldState becomes active
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.guard_held = true;
+        }
+        step_fixed_ticks(&mut app, 1);
+        assert!(app.world().get::<ShieldState>(player).unwrap().active);
+        let hp_before = app.world().get::<ShieldState>(player).unwrap().health;
+
+        // Spawn an overlapping enemy hitbox directly onto the shielded player
+        let attacker = spawn_test_target(&mut app, Vec2::new(30.0, 18.0), 0.0);
+        app.world_mut().spawn((
+            Hitbox {
+                owner: attacker,
+                team: Team::Enemy,
+                offset: Vec2::ZERO,
+                radius: 20.0,
+                damage: 14.0,
+                base_kb: 210.0,
+                kb_scale: 2.5,
+                momentum_mult: 0.0,
+                angle_deg: 35.0,
+                attacker_speed: 0.0,
+                facing: -1.0,
+                lifetime: Timer::from_seconds(0.2, TimerMode::Once),
+                piercing: false,
+                despawn_on_expire: true,
+                recoil_bounce_vy: None,
+                hit_entities: std::collections::HashSet::new(),
+                is_charged: false,
+                min_hitstop_frames: 3,
+            },
+            Transform::from_xyz(0.0, 18.0, 0.0),
+        ));
+
+        step_fixed_ticks(&mut app, 1);
+
+        assert_eq!(
+            app.world().get::<DamagePercent>(player).unwrap().0,
+            0.0,
+            "Active grounded Shield must block incoming hit with 0% damage"
+        );
+        let hp_after = app.world().get::<ShieldState>(player).unwrap().health;
+        assert!(
+            hp_after < hp_before - 20.0,
+            "Blocking heavy hit must drain shield health ({} -> {})",
+            hp_before,
+            hp_after
+        );
+    }
+
+    #[test]
+    fn test_directional_air_dodge_grants_iframes_once_per_airtime() {
+        use crate::combat::{AirDodgeState, Invulnerable};
+        use crate::physics::{KinematicBody, MovementState, PlayerIntent, SolidRect};
+
+        let (mut app, player) = physics_test_app(Vec2::new(0.0, 120.0));
+        app.world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-200.0, -32.0), Vec2::new(200.0, 0.0)));
+        {
+            let mut body = app.world_mut().get_mut::<KinematicBody>(player).unwrap();
+            body.state = MovementState::Airborne;
+            body.velocity = Vec2::ZERO;
+        }
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.move_axis = Vec2::new(1.0, 0.0);
+            intent.guard_just_pressed = true;
+        }
+
+        step_fixed_ticks(&mut app, 1);
+
+        let invuln = app
+            .world()
+            .get::<Invulnerable>(player)
+            .is_some_and(Invulnerable::is_active);
+        let vx = app.world().get::<KinematicBody>(player).unwrap().velocity.x;
+        let dodge = app.world().get::<AirDodgeState>(player).unwrap();
+        assert!(invuln, "Air-Dodge must grant invulnerability frames");
+        assert!(vx > 240.0, "Directional Air-Dodge must burst right, got vx={}", vx);
+        assert!(dodge.used_in_air);
+
+        // Wait until air-dodge finishes while still airborne, try again -> must NOT trigger twice!
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.guard_just_pressed = false;
+        }
+        step_fixed_ticks(&mut app, 26);
+        {
+            let mut body = app.world_mut().get_mut::<KinematicBody>(player).unwrap();
+            body.position.y = 140.0;
+            body.velocity = Vec2::ZERO;
+        }
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.move_axis = Vec2::new(-1.0, 0.0);
+            intent.guard_just_pressed = true;
+        }
+        step_fixed_ticks(&mut app, 1);
+        assert!(
+            app.world().get::<Invulnerable>(player).is_none(),
+            "Air-Dodge must be limited to once per airtime until touching ground/wall"
+        );
+    }
+
+    #[test]
+    fn test_bone_projected_ron_hitboxes_and_combo_timer() {
+        use crate::combat::{
+            AttackKind, ComboTracker, FighterFrameData, StageRunTimer, resolve_move_spec,
+        };
+        use crate::physics::{KinematicBody, MovementState, PlayerIntent};
+
+        let frame_data = FighterFrameData::load_default();
+        assert!(
+            frame_data.hero_manifest.is_some(),
+            "FighterFrameData must load baked assets/sprites/hero/hero.ron headlessly"
+        );
+        let d_air = resolve_move_spec(AttackKind::DownAir, &frame_data);
+        assert_eq!(d_air.angle_deg, -78.0);
+        assert!(d_air.offset.y < -14.0);
+        let muzzle = frame_data.buster_muzzle_offset();
+        assert!(muzzle.x >= 18.0);
+
+        // Verify ComboTracker increments across consecutive hits and StageRunTimer advances in Playing
+        let (mut app, player) = physics_test_app(Vec2::new(0.0, 60.0));
+        let _target = spawn_test_target(&mut app, Vec2::new(26.0, 60.0), 0.0);
+        {
+            let mut body = app.world_mut().get_mut::<KinematicBody>(player).unwrap();
+            body.state = MovementState::Grounded;
+            body.facing = 1.0;
+        }
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.melee_just_pressed = true;
+        }
+        step_fixed_ticks(&mut app, 1);
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.melee_just_pressed = false;
+        }
+        step_fixed_ticks(&mut app, 15);
+
+        let combo = app.world().resource::<ComboTracker>();
+        assert_eq!(combo.hits, 1);
+        assert!(combo.damage > 0.0);
+
+        let elapsed = app.world().resource::<StageRunTimer>().elapsed_secs;
+        assert!(
+            elapsed >= 0.24,
+            "StageRunTimer must advance deterministically in FixedUpdate (got {})",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn test_milestone2_foundry_textures_and_prompt_icons_exist() {
+        use std::path::Path;
+
+        for tex in [
+            "assets/textures/foundry/foundry_bg_far.png",
+            "assets/textures/foundry/foundry_bg_mid.png",
+            "assets/textures/foundry/foundry_tile_metal.png",
+        ] {
+            let p = Path::new(tex);
+            assert!(p.exists(), "Expected Foundry art asset at {}", p.display());
+            assert!(std::fs::metadata(p).expect("readable").len() > 500);
+        }
+
+        for icon in [
+            "assets/ui/prompts/xbox_button_color_a.png",
+            "assets/ui/prompts/xbox_button_color_x.png",
+            "assets/ui/prompts/xbox_lb.png",
+            "assets/ui/prompts/keyboard_space.png",
+            "assets/ui/prompts/keyboard_q.png",
+            "assets/ui/prompts/keyboard_escape.png",
+        ] {
+            let p = Path::new(icon);
+            assert!(p.exists(), "Expected Kenney prompt icon at {}", p.display());
+            assert!(std::fs::metadata(p).expect("readable").len() > 100);
+        }
+
+        let map = default_player_input_map();
+        let guard_bindings = map
+            .get_buttonlike(&PlayerAction::Guard)
+            .expect("Guard action must have gamepad + keyboard bindings");
+        assert!(guard_bindings.len() >= 4);
+    }
+
+    // -------------------------------------------------------------------------
+    // Playtest Patch — Hit Deduplication, Ledge-Stop, Double-Jump, Angel Respawn & Pushbox
+    // -------------------------------------------------------------------------
+
+    /// Required regression test: a single active melee swing overlapping an enemy across
+    /// multiple ticks hits that enemy AT MOST ONCE (HashSet deduplication — zero multi-ticking).
+    #[test]
+    fn test_hitbox_hits_each_target_once_per_swing() {
+        use crate::combat::{ComboTracker, DamagePercent};
+        use crate::physics::{KinematicBody, MovementState, PlayerIntent, SolidRect};
+
+        let (mut app, player) = physics_test_app(Vec2::new(0.0, 18.0));
+        app.world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-200.0, -32.0), Vec2::new(400.0, 0.0)));
+        let target = spawn_test_target(&mut app, Vec2::new(22.0, 18.0), 0.0);
+
+        // Single clean melee swing while overlapping target
+        {
+            let mut body = app.world_mut().get_mut::<KinematicBody>(player).unwrap();
+            body.state = MovementState::Grounded;
+            body.facing = 1.0;
+        }
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.melee_just_pressed = true;
+        }
+        step_fixed_ticks(&mut app, 1);
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.melee_just_pressed = false;
+        }
+
+        // Keep target deliberately pinned right inside the active hitbox for the entire swing lifetime
+        let damage_after_first = app.world().get::<DamagePercent>(target).unwrap().0;
+        assert!(damage_after_first > 0.0, "Initial swing contact must land");
+        for _ in 0..12 {
+            {
+                let mut tb = app.world_mut().get_mut::<KinematicBody>(target).unwrap();
+                tb.position = Vec2::new(22.0, 18.0);
+                tb.velocity = Vec2::ZERO;
+            }
+            step_fixed_ticks(&mut app, 1);
+        }
+
+        assert_eq!(
+            app.world().get::<DamagePercent>(target).unwrap().0,
+            damage_after_first,
+            "A single swing must NEVER multi-tick the same target across active frames"
+        );
+        assert_eq!(
+            app.world().resource::<ComboTracker>().hits,
+            1,
+            "Combo counter must register exactly 1 hit for 1 swing on 1 target"
+        );
+    }
+
+    #[test]
+    fn test_grounded_attack_ledge_stop_prevents_self_yeet() {
+        use crate::physics::{KinematicBody, MovementState, PlayerIntent, SolidRect};
+
+        // Platform ends sharply at x = 100.0; place player sprinting right near the edge (x = 84)
+        let (mut app, player) = physics_test_app(Vec2::new(84.0, 18.0));
+        app.world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-100.0, -32.0), Vec2::new(100.0, 0.0)));
+        step_fixed_ticks(&mut app, 2);
+
+        {
+            let mut body = app.world_mut().get_mut::<KinematicBody>(player).unwrap();
+            body.state = MovementState::Grounded;
+            body.ground_speed = 240.0;
+            body.velocity.x = 240.0;
+            body.facing = 1.0;
+        }
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.move_axis = Vec2::new(1.0, 0.0);
+            intent.melee_just_pressed = true;
+        }
+        step_fixed_ticks(&mut app, 1);
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.melee_just_pressed = false;
+        }
+        step_fixed_ticks(&mut app, 10);
+
+        let body = app.world().get::<KinematicBody>(player).unwrap();
+        assert_eq!(
+            body.state,
+            MovementState::Grounded,
+            "Grounded Dash Attack near a ledge must clamp safely at edge instead of yeeting off"
+        );
+        assert!(
+            body.position.x <= 101.0,
+            "Player x ({}) must stay clamped on the platform edge (<= 100)",
+            body.position.x
+        );
+    }
+
+    #[test]
+    fn test_player_double_jump_and_controlled_up_b() {
+        use crate::physics::{KinematicBody, MovementState, PlayerIntent, SolidRect};
+
+        let (mut app, player) = physics_test_app(Vec2::new(0.0, 18.0));
+        app.world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-200.0, -32.0), Vec2::new(200.0, 0.0)));
+        step_fixed_ticks(&mut app, 3);
+        assert_eq!(
+            app.world().get::<KinematicBody>(player).unwrap().air_jumps_remaining,
+            1
+        );
+
+        // 1. Ground jump
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.jump_just_pressed = true;
+            intent.jump_held = true;
+        }
+        step_fixed_ticks(&mut app, 1);
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.jump_just_pressed = false;
+        }
+        // Let apex pass so vy < 0, then trigger mid-air Double Jump!
+        step_fixed_ticks(&mut app, 26);
+        assert!(app.world().get::<KinematicBody>(player).unwrap().velocity.y < 0.0);
+
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.jump_just_pressed = true;
+            intent.jump_held = true;
+        }
+        step_fixed_ticks(&mut app, 1);
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.jump_just_pressed = false;
+        }
+        let body_after_dj = app.world().get::<KinematicBody>(player).unwrap();
+        assert_eq!(body_after_dj.state, MovementState::Airborne);
+        assert_eq!(body_after_dj.air_jumps_remaining, 0);
+        assert!(
+            body_after_dj.velocity.y > 350.0,
+            "Double jump must grant crisp vertical lift, got vy={}",
+            body_after_dj.velocity.y
+        );
+
+        // 2. Follow up with controlled Up-B recovery
+        step_fixed_ticks(&mut app, 20);
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.move_axis = Vec2::new(1.0, 1.0);
+            intent.special_just_pressed = true;
+        }
+        step_fixed_ticks(&mut app, 1);
+        let body_after_upb = app.world().get::<KinematicBody>(player).unwrap();
+        assert!(
+            body_after_upb.velocity.y > 380.0 && body_after_upb.velocity.x.abs() <= 160.0,
+            "Up-B must deliver controlled recovery without screen-crossing zip, got {:?}",
+            body_after_upb.velocity
+        );
+    }
+
+    #[test]
+    fn test_player_blast_zone_respawn_angel_platform() {
+        use crate::combat::{DamagePercent, Invulnerable};
+        use crate::enemies::BlastZone;
+        use crate::physics::KinematicBody;
+        use crate::player::{PlayerRespawnState, RESPAWN_ANGEL_PLATFORM_SECS};
+
+        let (mut app, player) = physics_test_app(Vec2::new(1045.0, 260.0));
+        app.world_mut().spawn(BlastZone {
+            min: Vec2::new(635.0, 35.0),
+            max: Vec2::new(1455.0, 515.0),
+            arena_center: Vec2::new(1045.0, 292.0),
+        });
+
+        // Knock player below the bottom blast zone
+        app.world_mut().get_mut::<DamagePercent>(player).unwrap().0 = 95.0;
+        {
+            let mut body = app.world_mut().get_mut::<KinematicBody>(player).unwrap();
+            body.position = Vec2::new(1045.0, 20.0);
+        }
+
+        step_fixed_ticks(&mut app, 1);
+
+        let respawn = app.world().get::<PlayerRespawnState>(player).unwrap();
+        assert!(respawn.active, "Player KO must activate the Angel Respawn Platform");
+        assert!((respawn.timer - RESPAWN_ANGEL_PLATFORM_SECS).abs() < 0.05);
+        assert!((respawn.platform_pos.x - 1045.0).abs() < 1.0);
+        assert_eq!(app.world().get::<DamagePercent>(player).unwrap().0, 0.0);
+        assert!(
+            app.world()
+                .get::<Invulnerable>(player)
+                .is_some_and(Invulnerable::is_active),
+            "Angel platform respawn must grant 2.0s blinking invulnerability"
+        );
+
+        // Hover safely for 1.5s without falling, then auto-release cleanly!
+        let hover_y = app.world().get::<KinematicBody>(player).unwrap().position.y;
+        step_fixed_ticks(&mut app, 30);
+        assert!(
+            (app.world().get::<KinematicBody>(player).unwrap().position.y - hover_y).abs() < 0.1,
+            "Player must hover steadily on the angel platform while timer is active"
+        );
+        step_fixed_ticks(&mut app, 65);
+        assert!(
+            !app.world().get::<PlayerRespawnState>(player).unwrap().active,
+            "Angel platform must release cleanly after 1.5s"
+        );
+    }
+
+    #[test]
+    fn test_grounded_fighter_pushbox_soft_separation() {
+        use crate::physics::{KinematicBody, MovementState, SolidRect};
+
+        let (mut app, player) = physics_test_app(Vec2::new(100.0, 18.0));
+        app.world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-100.0, -32.0), Vec2::new(300.0, 0.0)));
+        let enemy = spawn_test_target(&mut app, Vec2::new(102.0, 18.0), 0.0);
+
+        {
+            let mut pb = app.world_mut().get_mut::<KinematicBody>(player).unwrap();
+            pb.state = MovementState::Grounded;
+            let mut eb = app.world_mut().get_mut::<KinematicBody>(enemy).unwrap();
+            eb.state = MovementState::Grounded;
+        }
+
+        let start_gap = (app.world().get::<KinematicBody>(player).unwrap().position.x
+            - app.world().get::<KinematicBody>(enemy).unwrap().position.x)
+            .abs();
+        step_fixed_ticks(&mut app, 12);
+        let end_gap = (app.world().get::<KinematicBody>(player).unwrap().position.x
+            - app.world().get::<KinematicBody>(enemy).unwrap().position.x)
+            .abs();
+
+        assert!(
+            end_gap > start_gap + 14.0,
+            "Grounded pushbox must gently separate overlapping fighters (start_gap={}, end_gap={})",
+            start_gap,
+            end_gap
+        );
+    }
+
+    #[test]
+    fn test_neutral_stick_with_boost_held_never_shoots_forward() {
+        use crate::physics::{KinematicBody, MovementState, PlayerIntent, SolidRect};
+
+        let (mut app, player) = physics_test_app(Vec2::new(0.0, 18.0));
+        app.world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-300.0, -32.0), Vec2::new(300.0, 0.0)));
+        step_fixed_ticks(&mut app, 3);
+        let start_x = app.world().get::<KinematicBody>(player).unwrap().position.x;
+
+        // Hold Boost/Dash with neutral stick -> must NOT auto-run left or right on its own!
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.move_axis = Vec2::ZERO;
+            intent.boost_held = true;
+        }
+        step_fixed_ticks(&mut app, 20);
+        let body = app.world().get::<KinematicBody>(player).unwrap();
+        assert_eq!(body.state, MovementState::Grounded);
+        assert!(
+            body.velocity.x.abs() < 1.0 && (body.position.x - start_x).abs() < 1.0,
+            "Neutral stick + boost_held must NEVER shoot character forward (pos_x={}, vx={})",
+            body.position.x,
+            body.velocity.x
+        );
+
+        // Even briefly dipping Down while boost_held was already held must NOT trigger Spin Dash launch!
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.move_axis = Vec2::new(0.0, -1.0);
+            intent.boost_just_pressed = false;
+            intent.boost_held = true;
+        }
+        step_fixed_ticks(&mut app, 4);
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.move_axis = Vec2::ZERO;
+            intent.boost_held = false;
+        }
+        step_fixed_ticks(&mut app, 4);
+        let body_after = app.world().get::<KinematicBody>(player).unwrap();
+        assert!(
+            body_after.velocity.x.abs() < 1.0,
+            "Holding Boost while crouching without fresh press must NOT rocket player forward (vx={})",
+            body_after.velocity.x
+        );
+    }
+
+    #[test]
+    fn test_sync_player_intent_from_leafwing_actions() {
+        use crate::physics::PlayerIntent;
+        use crate::player::Player;
+
+        // Exercise the REAL Leafwing ActionState -> PlayerIntent sync system (without ManualPlayerIntent)
+        let mut app = headless_test_app();
+        app.world_mut().write_message(GameStateCommand::StartGame);
+        app.update();
+
+        KeyCode::KeyE.press(app.world_mut());
+        KeyCode::KeyQ.press(app.world_mut());
+        KeyCode::KeyJ.press(app.world_mut());
+        app.update();
+        step_fixed_ticks(&mut app, 1);
+
+        let player = app
+            .world_mut()
+            .query_filtered::<Entity, With<Player>>()
+            .single(app.world())
+            .expect("Player exists");
+        let intent = *app.world().get::<PlayerIntent>(player).unwrap();
+        assert!(intent.boost_held, "Digital KeyE must activate boost_held");
+        assert!(intent.guard_held, "Digital KeyQ must activate guard_held");
+        assert!(
+            intent.melee_just_pressed,
+            "First FixedUpdate tick after press must fire melee_just_pressed"
+        );
+
+        // Second FixedUpdate tick within same render frame must NOT double-fire melee_just_pressed!
+        step_fixed_ticks(&mut app, 1);
+        let intent2 = *app.world().get::<PlayerIntent>(player).unwrap();
+        assert!(
+            !intent2.melee_just_pressed,
+            "FixedUpdate edge latch must prevent double-firing melee_just_pressed on multi-tick frames"
+        );
+    }
+
+    /// Regression test for the single-frame horizontal floor-ejection teleport bug:
+    /// falling at terminal velocity onto any point of a 500px-wide solid floor must land
+    /// straight down with ZERO horizontal teleporting.
+    #[test]
+    fn test_fast_fall_onto_wide_floor_never_teleports_horizontally() {
+        use crate::combat::Hitstun;
+        use crate::physics::{KinematicBody, MovementState, SolidRect};
+
+        // 500px-wide Battlefield deck: x = 795..1295, top y = 220 (center x = 1045)
+        let drop_x = 960.0;
+        let (mut app, player) = physics_test_app(Vec2::new(drop_x, 240.0));
+        app.world_mut().spawn(SolidRect::from_min_max(
+            Vec2::new(795.0, 196.0),
+            Vec2::new(1295.0, 220.0),
+        ));
+
+        // Drop player at terminal fall velocity (-620 px/s) -> crosses 10.3px in a single tick!
+        {
+            let mut body = app.world_mut().get_mut::<KinematicBody>(player).unwrap();
+            body.state = MovementState::Airborne;
+            body.velocity = Vec2::new(0.0, -620.0);
+        }
+        step_fixed_ticks(&mut app, 4);
+
+        let body = app.world().get::<KinematicBody>(player).unwrap();
+        assert_eq!(body.state, MovementState::Grounded);
+        assert!(
+            (body.position.x - drop_x).abs() < 0.5,
+            "Fast-falling onto a wide floor must NEVER eject horizontally (expected x={}, got x={})",
+            drop_x,
+            body.position.x
+        );
+        assert!(
+            (body.feet_y() - 220.0).abs() < 0.5,
+            "Expected clean landing at y=220, got feet_y={}",
+            body.feet_y()
+        );
+
+        // Also verify a Hitstun enemy falling onto the same wide floor never teleports off-stage!
+        let enemy = spawn_test_target(&mut app, Vec2::new(1120.0, 242.0), 60.0);
+        {
+            let mut eb = app.world_mut().get_mut::<KinematicBody>(enemy).unwrap();
+            eb.state = MovementState::Airborne;
+            eb.velocity = Vec2::new(0.0, -520.0);
+        }
+        app.world_mut().entity_mut(enemy).insert(Hitstun::new(0.5));
+        step_fixed_ticks(&mut app, 4);
+
+        let eb = app.world().get::<KinematicBody>(enemy).unwrap();
+        assert!(
+            (eb.position.x - 1120.0).abs() < 0.5,
+            "Hitstun enemy falling onto wide floor must NEVER teleport horizontally (got x={})",
+            eb.position.x
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Expanded Smash Moveset, 4-Archetype Enemy Roster & Gamepad D-Pad Guard Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_down_tilt_and_forward_smash_launch_arcs() {
+        use crate::combat::{AttackKind, AttackState, DamagePercent};
+        use crate::physics::{KinematicBody, MovementState, PlayerIntent, SolidRect};
+
+        // 1. Down-Tilt: low sweeping combo starter launching target sharply upward (~72°)
+        let (mut app, player) = physics_test_app(Vec2::new(0.0, 18.0));
+        app.world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-200.0, -32.0), Vec2::new(400.0, 0.0)));
+        let target = spawn_test_target(&mut app, Vec2::new(26.0, 14.0), 15.0);
+        step_fixed_ticks(&mut app, 2);
+
+        {
+            let mut body = app.world_mut().get_mut::<KinematicBody>(player).unwrap();
+            body.facing = 1.0;
+        }
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.move_axis = Vec2::new(0.0, -1.0);
+            intent.melee_just_pressed = true;
+        }
+        step_fixed_ticks(&mut app, 1);
+        assert_eq!(
+            app.world().get::<AttackState>(player).unwrap().active_move,
+            Some(AttackKind::DownTilt)
+        );
+        let dtilt_vel = app.world().get::<KinematicBody>(target).unwrap().velocity;
+        assert!(
+            dtilt_vel.y > 140.0,
+            "Down-Tilt must pop enemy upward for aerial combo followups, got {:?}",
+            dtilt_vel
+        );
+
+        // 2. Forward-Smash: heavy grounded finisher dealing >= 15% and strong horizontal launch
+        let (mut app2, player2) = physics_test_app(Vec2::new(0.0, 18.0));
+        app2.world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-200.0, -32.0), Vec2::new(400.0, 0.0)));
+        let target2 = spawn_test_target(&mut app2, Vec2::new(30.0, 18.0), 40.0);
+        step_fixed_ticks(&mut app2, 2);
+        {
+            let mut body = app2.world_mut().get_mut::<KinematicBody>(player2).unwrap();
+            body.state = MovementState::Grounded;
+            body.ground_speed = 0.0;
+            body.velocity = Vec2::ZERO;
+            body.facing = 1.0;
+        }
+        {
+            let mut intent = app2.world_mut().get_mut::<PlayerIntent>(player2).unwrap();
+            intent.move_axis = Vec2::new(1.0, 0.0);
+            intent.melee_just_pressed = true;
+        }
+        step_fixed_ticks(&mut app2, 1);
+        assert_eq!(
+            app2.world().get::<AttackState>(player2).unwrap().active_move,
+            Some(AttackKind::ForwardSmash)
+        );
+        let pct2 = app2.world().get::<DamagePercent>(target2).unwrap().0;
+        let vel2 = app2.world().get::<KinematicBody>(target2).unwrap().velocity;
+        assert!(pct2 >= 55.0, "Forward-Smash must deal heavy damage, got pct={}", pct2);
+        assert!(
+            vel2.x > 250.0,
+            "Forward-Smash must launch target powerfully forward, got {:?}",
+            vel2
+        );
+    }
+
+    #[test]
+    fn test_four_way_specials_wave_blitz_counter_and_dive_slam() {
+        use crate::combat::{
+            AttackKind, AttackState, BreakerWaveProjectile, CounterStance, DamagePercent, Hitbox,
+            MeteorDiveState, Team,
+        };
+        use crate::physics::{KinematicBody, MovementState, PlayerIntent, SolidRect};
+
+        // 1. Grounded Neutral-B: Breaker Crescent Energy Wave spawns and hits enemy ahead
+        let (mut app, player) = physics_test_app(Vec2::new(0.0, 18.0));
+        app.world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-200.0, -32.0), Vec2::new(400.0, 0.0)));
+        let target = spawn_test_target(&mut app, Vec2::new(84.0, 18.0), 0.0);
+        step_fixed_ticks(&mut app, 2);
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.move_axis = Vec2::ZERO;
+            intent.special_just_pressed = true;
+        }
+        step_fixed_ticks(&mut app, 1);
+        assert_eq!(
+            app.world().get::<AttackState>(player).unwrap().active_move,
+            Some(AttackKind::NeutralSpecial)
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<&BreakerWaveProjectile>()
+                .iter(app.world())
+                .count(),
+            1
+        );
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.special_just_pressed = false;
+        }
+        step_fixed_ticks(&mut app, 18);
+        assert!(
+            app.world().get::<DamagePercent>(target).unwrap().0 >= 10.0,
+            "Neutral-B Breaker Crescent Wave must travel and strike enemies ahead"
+        );
+
+        // 2. Side-B: Plasma Blitz dashes forward cleanly (and ledge-clamps on platform!)
+        let (mut app_side, p_side) = physics_test_app(Vec2::new(82.0, 18.0));
+        app_side
+            .world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-100.0, -32.0), Vec2::new(100.0, 0.0)));
+        step_fixed_ticks(&mut app_side, 2);
+        {
+            let mut intent = app_side.world_mut().get_mut::<PlayerIntent>(p_side).unwrap();
+            intent.move_axis = Vec2::new(1.0, 0.0);
+            intent.special_just_pressed = true;
+        }
+        step_fixed_ticks(&mut app_side, 1);
+        assert_eq!(
+            app_side.world().get::<AttackState>(p_side).unwrap().active_move,
+            Some(AttackKind::SideSpecial)
+        );
+        {
+            let mut intent = app_side.world_mut().get_mut::<PlayerIntent>(p_side).unwrap();
+            intent.special_just_pressed = false;
+        }
+        step_fixed_ticks(&mut app_side, 10);
+        let side_body = app_side.world().get::<KinematicBody>(p_side).unwrap();
+        assert_eq!(
+            side_body.state,
+            MovementState::Grounded,
+            "Grounded Side-B Plasma Blitz near ledge must clamp safely without self-yeeting"
+        );
+
+        // 3. Grounded Down-B: Aegis Counter negates incoming hit (0% taken) and blasts enemy back!
+        let (mut app_cnt, p_cnt) = physics_test_app(Vec2::new(0.0, 18.0));
+        app_cnt
+            .world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-200.0, -32.0), Vec2::new(200.0, 0.0)));
+        let attacker = spawn_test_target(&mut app_cnt, Vec2::new(32.0, 18.0), 10.0);
+        step_fixed_ticks(&mut app_cnt, 2);
+        {
+            let mut intent = app_cnt.world_mut().get_mut::<PlayerIntent>(p_cnt).unwrap();
+            intent.move_axis = Vec2::new(0.0, -1.0);
+            intent.special_just_pressed = true;
+        }
+        step_fixed_ticks(&mut app_cnt, 1);
+        assert!(app_cnt.world().get::<CounterStance>(p_cnt).unwrap().is_active());
+        {
+            let mut intent = app_cnt.world_mut().get_mut::<PlayerIntent>(p_cnt).unwrap();
+            intent.special_just_pressed = false;
+        }
+        app_cnt.world_mut().spawn((
+            Hitbox {
+                owner: attacker,
+                team: Team::Enemy,
+                offset: Vec2::ZERO,
+                radius: 22.0,
+                damage: 14.0,
+                base_kb: 200.0,
+                kb_scale: 2.0,
+                momentum_mult: 0.0,
+                angle_deg: 35.0,
+                attacker_speed: 0.0,
+                facing: -1.0,
+                lifetime: Timer::from_seconds(0.2, TimerMode::Once),
+                piercing: false,
+                despawn_on_expire: true,
+                recoil_bounce_vy: None,
+                hit_entities: std::collections::HashSet::new(),
+                is_charged: false,
+                min_hitstop_frames: 4,
+            },
+            Transform::from_xyz(0.0, 18.0, 0.0),
+        ));
+        step_fixed_ticks(&mut app_cnt, 2);
+        assert_eq!(
+            app_cnt.world().get::<DamagePercent>(p_cnt).unwrap().0,
+            0.0,
+            "Active Down-B Aegis Counter must negate 100% incoming damage"
+        );
+        assert!(
+            app_cnt.world().get::<DamagePercent>(attacker).unwrap().0 > 20.0,
+            "Triggered Aegis Counter must blast attacker back with heavy counter damage"
+        );
+
+        // 4. Airborne Down-B: Meteor Breaker Dive slams floor and detonates shockwave hitting nearby foe!
+        let (mut app_dive, p_dive) = physics_test_app(Vec2::new(0.0, 90.0));
+        app_dive
+            .world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-200.0, -32.0), Vec2::new(200.0, 0.0)));
+        let victim = spawn_test_target(&mut app_dive, Vec2::new(42.0, 18.0), 0.0);
+        {
+            let mut b = app_dive.world_mut().get_mut::<KinematicBody>(p_dive).unwrap();
+            b.state = MovementState::Airborne;
+            b.velocity = Vec2::ZERO;
+        }
+        {
+            let mut intent = app_dive.world_mut().get_mut::<PlayerIntent>(p_dive).unwrap();
+            intent.move_axis = Vec2::new(0.0, -1.0);
+            intent.special_just_pressed = true;
+        }
+        step_fixed_ticks(&mut app_dive, 1);
+        assert!(app_dive.world().get::<MeteorDiveState>(p_dive).unwrap().active);
+        {
+            let mut intent = app_dive.world_mut().get_mut::<PlayerIntent>(p_dive).unwrap();
+            intent.special_just_pressed = false;
+        }
+        step_fixed_ticks(&mut app_dive, 18);
+        assert!(
+            !app_dive.world().get::<MeteorDiveState>(p_dive).unwrap().active,
+            "Meteor Dive must finish upon slamming the ground"
+        );
+        assert!(
+            app_dive.world().get::<DamagePercent>(victim).unwrap().0 >= 12.0,
+            "Meteor Dive touchdown shockwave must damage nearby enemies"
+        );
+    }
+
+    #[test]
+    fn test_four_enemy_archetypes_and_baked_mage_assassin_assets() {
+        use std::path::Path;
+        use crate::enemies::{
+            EnemyArchetype, EnemyFighter, TurretProjectile, spawn_enemy_fighter,
+        };
+        use crate::physics::{KinematicBody, SolidRect};
+        use crate::sprite_manifest::SpriteSheetManifest;
+
+        // 1. Verify freshly baked 19-clip / 106-frame sprite packs for hero, mage, and assassin!
+        for pack in ["hero", "mage", "assassin"] {
+            let dir = Path::new("assets/sprites").join(pack);
+            for suffix in ["_diffuse.png", "_normal.png", "_emission.png", ".ron"] {
+                let p = dir.join(format!("{pack}{suffix}"));
+                assert!(p.exists(), "Expected baked asset at {}", p.display());
+                assert!(std::fs::metadata(&p).expect("readable").len() > 0);
+            }
+            let manifest = SpriteSheetManifest::load_from_file(dir.join(format!("{pack}.ron")))
+                .unwrap_or_else(|e| panic!("Baked {pack}.ron failed to load: {e}"));
+            for clip in [
+                "idle",
+                "run",
+                "jab",
+                "down_tilt",
+                "up_tilt",
+                "f_smash",
+                "neutral_special",
+                "side_special",
+                "down_special",
+                "guard",
+            ] {
+                assert!(
+                    manifest.animations.contains_key(clip),
+                    "Pack {pack} missing expanded clip '{clip}'"
+                );
+            }
+        }
+
+        // 2. Verify ArcaneZoner aims and fires an arcane plasma orb at mid-range!
+        let (mut app, _player) = physics_test_app(Vec2::new(860.0, 240.0));
+        app.world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(795.0, 196.0), Vec2::new(1295.0, 220.0)));
+        let mage = {
+            let mut commands = app.world_mut().commands();
+            let id = spawn_enemy_fighter(
+                &mut commands,
+                EnemyArchetype::ArcaneZoner,
+                Vec2::new(1040.0, 240.0),
+                false,
+            );
+            app.world_mut().flush();
+            id
+        };
+        app.world_mut()
+            .get_mut::<EnemyFighter>(mage)
+            .unwrap()
+            .special_cooldown = 0.0;
+        step_fixed_ticks(&mut app, 45);
+        let arcane_orbs = app
+            .world_mut()
+            .query::<&TurretProjectile>()
+            .iter(app.world())
+            .filter(|p| p.is_arcane)
+            .count();
+        assert!(
+            arcane_orbs >= 1,
+            "ArcaneZoner must telegraph and fire aimed arcane plasma orbs at mid-range"
+        );
+
+        // 3. Verify ShadowAssassin spawns cleanly with high move speed & unique archetype metadata
+        let assassin = {
+            let mut commands = app.world_mut().commands();
+            let id = spawn_enemy_fighter(
+                &mut commands,
+                EnemyArchetype::ShadowAssassin,
+                Vec2::new(1120.0, 240.0),
+                false,
+            );
+            app.world_mut().flush();
+            id
+        };
+        let a_fighter = app.world().get::<EnemyFighter>(assassin).unwrap();
+        assert_eq!(a_fighter.archetype, EnemyArchetype::ShadowAssassin);
+        assert!(a_fighter.archetype.move_speed() > EnemyArchetype::LightStriker.move_speed());
+        assert!(app.world().get::<KinematicBody>(assassin).is_some());
+    }
+
+    #[test]
+    fn test_gamepad_dpad_and_uncalibrated_trigger_guard() {
+        use bevy::input::gamepad::{
+            GamepadButtonChangedEvent, GamepadConnection, GamepadConnectionEvent,
+            RawGamepadButtonChangedEvent, RawGamepadEvent,
+        };
+        use crate::physics::{GamepadTriggerCalibration, PlayerIntent};
+        use crate::player::Player;
+
+        let mut app = headless_test_app();
+        app.world_mut().write_message(GameStateCommand::StartGame);
+        app.update();
+
+        // Spawn a simulated macOS Gamepad entity with uncalibrated LeftTrigger2 resting at 0.50!
+        let gp = app.world_mut().spawn_empty().id();
+        app.world_mut().write_message(GamepadConnectionEvent::new(
+            gp,
+            GamepadConnection::Connected {
+                name: "TestMacGamepad".into(),
+                vendor_id: Some(0x045e),
+                product_id: Some(0x02ea),
+            },
+        ));
+        app.update();
+
+        // Simulate macOS resting-midpoint LT2 = 0.50 + pressing DPadRight -> MUST move right, NEVER Guard!
+        app.world_mut()
+            .write_message(RawGamepadEvent::Button(RawGamepadButtonChangedEvent::new(
+                gp,
+                GamepadButton::LeftTrigger2,
+                0.50,
+            )));
+        app.world_mut()
+            .write_message(RawGamepadEvent::Button(RawGamepadButtonChangedEvent::new(
+                gp,
+                GamepadButton::DPadRight,
+                1.0,
+            )));
+        app.world_mut()
+            .write_message(GamepadButtonChangedEvent::new(
+                gp,
+                GamepadButton::LeftTrigger2,
+                bevy::input::ButtonState::Pressed,
+                0.50,
+            ));
+        app.update();
+        step_fixed_ticks(&mut app, 1);
+
+        let player = app
+            .world_mut()
+            .query_filtered::<Entity, With<Player>>()
+            .single(app.world())
+            .expect("Player exists");
+        let intent = *app.world().get::<PlayerIntent>(player).unwrap();
+        assert!(
+            !intent.guard_held,
+            "Uncalibrated 0.50 resting LeftTrigger2 must NEVER activate Shield/Guard"
+        );
+        assert!(
+            intent.move_axis.x > 0.5,
+            "Direct Gamepad DPadRight must move right cleanly, got {:?}",
+            intent.move_axis
+        );
+        assert!(
+            !app.world()
+                .resource::<GamepadTriggerCalibration>()
+                .lt2_calibrated,
+            "LT2 must remain uncalibrated until observed at < 0.15 rest"
+        );
+
+        // Now bring LT2 to rest (0.0) -> calibrates, then pull fully (0.95) -> activates Guard!
+        app.world_mut()
+            .write_message(RawGamepadEvent::Button(RawGamepadButtonChangedEvent::new(
+                gp,
+                GamepadButton::LeftTrigger2,
+                0.0,
+            )));
+        app.world_mut()
+            .write_message(RawGamepadEvent::Button(RawGamepadButtonChangedEvent::new(
+                gp,
+                GamepadButton::DPadRight,
+                0.0,
+            )));
+        app.update();
+        step_fixed_ticks(&mut app, 1);
+        assert!(
+            app.world()
+                .resource::<GamepadTriggerCalibration>()
+                .lt2_calibrated
+        );
+
+        app.world_mut()
+            .write_message(RawGamepadEvent::Button(RawGamepadButtonChangedEvent::new(
+                gp,
+                GamepadButton::LeftTrigger2,
+                0.95,
+            )));
+        app.update();
+        step_fixed_ticks(&mut app, 1);
+        let intent2 = *app.world().get::<PlayerIntent>(player).unwrap();
+        assert!(
+            intent2.guard_held,
+            "Calibrated full LT2 press (0.95) must activate Guard cleanly"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Full Stage Progression, D-Pad Calibration, Lockdown Ambush & Boss Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_dpad_calibration_handles_buttons_axes_and_hat_switch() {
+        use bevy::input::gamepad::{
+            GamepadConnection, GamepadConnectionEvent, RawGamepadAxisChangedEvent,
+            RawGamepadButtonChangedEvent, RawGamepadEvent,
+        };
+        use crate::input::{
+            DpadBinding, DpadCalibration, SavedGamepadAxis, SavedGamepadButton,
+        };
+        use crate::physics::PlayerIntent;
+        use crate::player::Player;
+
+        let mut app = headless_test_app();
+        app.world_mut().write_message(GameStateCommand::StartGame);
+        app.update();
+
+        let gp = app.world_mut().spawn_empty().id();
+        app.world_mut().write_message(GamepadConnectionEvent::new(
+            gp,
+            GamepadConnection::Connected {
+                name: "MacOsQuirkyPad".into(),
+                vendor_id: Some(0x2dc8),
+                product_id: Some(0x6001),
+            },
+        ));
+        app.update();
+
+        // Calibrate:
+        // - LEFT -> Other(12) raw button
+        // - RIGHT -> mis-mapped LeftTrigger (verifying Shield suppression!)
+        // - UP / DOWN -> single-axis HID Hat Switch Other(7) with discrete values -1.0 and +0.14 (neutral 1.0)
+        *app.world_mut().resource_mut::<DpadCalibration>() = DpadCalibration {
+            left: Some(DpadBinding::Button(SavedGamepadButton::Other(12))),
+            right: Some(DpadBinding::Button(SavedGamepadButton::LeftTrigger)),
+            up: Some(DpadBinding::AxisTarget {
+                axis: SavedGamepadAxis::Other(7),
+                target: -1.0,
+                neutral: 1.0,
+                tolerance: 0.18,
+            }),
+            down: Some(DpadBinding::AxisTarget {
+                axis: SavedGamepadAxis::Other(7),
+                target: 0.14,
+                neutral: 1.0,
+                tolerance: 0.18,
+            }),
+        };
+
+        let player = app
+            .world_mut()
+            .query_filtered::<Entity, With<Player>>()
+            .single(app.world())
+            .expect("Player exists");
+
+        // 1. Press mis-mapped LeftTrigger (calibrated as RIGHT) -> moves RIGHT and suppresses Shield!
+        app.world_mut()
+            .write_message(RawGamepadEvent::Button(RawGamepadButtonChangedEvent::new(
+                gp,
+                GamepadButton::LeftTrigger,
+                1.0,
+            )));
+        app.update();
+        step_fixed_ticks(&mut app, 1);
+        let intent_r = *app.world().get::<PlayerIntent>(player).unwrap();
+        assert!(
+            intent_r.move_axis.x > 0.5,
+            "Calibrated Right must move right cleanly, got {:?}",
+            intent_r.move_axis
+        );
+        assert!(
+            !intent_r.guard_held,
+            "Calibrated D-Pad button colliding with LeftTrigger must suppress Shield!"
+        );
+
+        // 2. Release LeftTrigger, push single-axis Hat Switch Other(7) to +0.14 (DOWN) -> moves DOWN!
+        app.world_mut()
+            .write_message(RawGamepadEvent::Button(RawGamepadButtonChangedEvent::new(
+                gp,
+                GamepadButton::LeftTrigger,
+                0.0,
+            )));
+        app.world_mut()
+            .write_message(RawGamepadEvent::Axis(RawGamepadAxisChangedEvent::new(
+                gp,
+                GamepadAxis::Other(7),
+                0.14,
+            )));
+        app.update();
+        step_fixed_ticks(&mut app, 1);
+        let intent_d = *app.world().get::<PlayerIntent>(player).unwrap();
+        assert!(
+            intent_d.move_axis.y < -0.5,
+            "Calibrated single-axis HID hat switch DOWN must register cleanly, got {:?}",
+            intent_d.move_axis
+        );
+
+        // 3. Return Hat Switch to neutral (1.0) + press raw Other(12) (LEFT) -> moves LEFT!
+        app.world_mut()
+            .write_message(RawGamepadEvent::Axis(RawGamepadAxisChangedEvent::new(
+                gp,
+                GamepadAxis::Other(7),
+                1.0,
+            )));
+        app.world_mut()
+            .write_message(RawGamepadEvent::Button(RawGamepadButtonChangedEvent::new(
+                gp,
+                GamepadButton::Other(12),
+                1.0,
+            )));
+        app.update();
+        step_fixed_ticks(&mut app, 1);
+        let intent_l = *app.world().get::<PlayerIntent>(player).unwrap();
+        assert!(
+            intent_l.move_axis.x < -0.5,
+            "Calibrated raw Other(12) LEFT must register cleanly, got {:?}",
+            intent_l.move_axis
+        );
+    }
+
+    #[test]
+    fn test_lockdown_ambush_gates_waves_and_clear_reward() {
+        use crate::combat::DamagePercent;
+        use crate::enemies::{
+            ArenaScore, EncounterPhase, EncounterStatus, EnemyArchetype, EnemyFighter,
+            LockdownEncounter, LockdownGate,
+        };
+        use crate::physics::{KinematicBody, SolidRect};
+
+        let (mut app, player) = physics_test_app(Vec2::new(820.0, 240.0));
+        app.world_mut().spawn(SolidRect::from_min_max(
+            Vec2::new(780.0, 196.0),
+            Vec2::new(1500.0, 220.0),
+        ));
+        app.world_mut().get_mut::<DamagePercent>(player).unwrap().0 = 50.0;
+
+        let enc_entity = app
+            .world_mut()
+            .spawn(LockdownEncounter {
+                id: 1,
+                title: "TEST CAGE".to_string(),
+                is_boss: false,
+                trigger_x: 920.0,
+                min_x: 840.0,
+                max_x: 1460.0,
+                floor_y: 220.0,
+                arena_center: Vec2::new(1150.0, 312.0),
+                spawn_right_gate: true,
+                waves: vec![
+                    vec![(EnemyArchetype::LightStriker, Vec2::new(1040.0, 250.0))],
+                    vec![(EnemyArchetype::ArcaneZoner, Vec2::new(1240.0, 250.0))],
+                ],
+                current_wave: 0,
+                phase: EncounterPhase::Idle,
+                active_enemies: Vec::new(),
+                gate_entities: Vec::new(),
+            })
+            .id();
+
+        // Cross trigger_x -> lockdown activates, spawns 2 SolidRect LockdownGates & Wave 1 enemy!
+        app.world_mut()
+            .get_mut::<KinematicBody>(player)
+            .unwrap()
+            .position = Vec2::new(960.0, 240.0);
+        step_fixed_ticks(&mut app, 2);
+
+        assert_eq!(
+            app.world().get::<LockdownEncounter>(enc_entity).unwrap().phase,
+            EncounterPhase::Active
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<&LockdownGate>()
+                .iter(app.world())
+                .count(),
+            2,
+            "Ambush lockdown must slam shut both left & right laser gates"
+        );
+        assert!(
+            app.world()
+                .resource::<EncounterStatus>()
+                .camera_lock_center
+                .is_some()
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<&EnemyFighter>()
+                .iter(app.world())
+                .count(),
+            1
+        );
+
+        // Defeat Wave 1 -> Wave 2 spawns automatically!
+        let wave1: Vec<Entity> = app
+            .world_mut()
+            .query_filtered::<Entity, With<EnemyFighter>>()
+            .iter(app.world())
+            .collect();
+        for e in wave1 {
+            app.world_mut().entity_mut(e).despawn();
+        }
+        step_fixed_ticks(&mut app, 2);
+        assert_eq!(
+            app.world()
+                .get::<LockdownEncounter>(enc_entity)
+                .unwrap()
+                .current_wave,
+            1,
+            "Clearing Wave 1 must immediately trigger Wave 2 reinforcements"
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<&EnemyFighter>()
+                .iter(app.world())
+                .count(),
+            1
+        );
+
+        // Defeat Wave 2 -> Encounter clears, both gates shatter, camera unlocks, player heals!
+        let wave2: Vec<Entity> = app
+            .world_mut()
+            .query_filtered::<Entity, With<EnemyFighter>>()
+            .iter(app.world())
+            .collect();
+        for e in wave2 {
+            app.world_mut().entity_mut(e).despawn();
+        }
+        step_fixed_ticks(&mut app, 2);
+        assert_eq!(
+            app.world().get::<LockdownEncounter>(enc_entity).unwrap().phase,
+            EncounterPhase::Cleared
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<&LockdownGate>()
+                .iter(app.world())
+                .count(),
+            0,
+            "Clearing final wave must shatter all lockdown gates"
+        );
+        assert!(
+            app.world()
+                .resource::<EncounterStatus>()
+                .camera_lock_center
+                .is_none()
+        );
+        assert_eq!(app.world().resource::<ArenaScore>().encounters_cleared, 1);
+        assert!(
+            app.world().get::<DamagePercent>(player).unwrap().0 < 50.0,
+            "Clearing ambush arena must heal player Smash %"
+        );
+    }
+
+    #[test]
+    fn test_boss_two_phases_baked_144px_assets_and_stage_clear_victory() {
+        use std::path::Path;
+        use crate::combat::CombatHitEvent;
+        use crate::enemies::{
+            BossState, EncounterPhase, EnemyArchetype, EnemyHealth, LockdownEncounter,
+        };
+        use crate::physics::{KinematicBody, SolidRect};
+        use crate::sprite_manifest::SpriteSheetManifest;
+
+        // 1. Verify freshly baked 144x144 19-clip Boss sprite pack exists & loads cleanly!
+        let boss_dir = Path::new("assets/sprites/boss");
+        for suffix in ["_diffuse.png", "_normal.png", "_emission.png", ".ron"] {
+            let p = boss_dir.join(format!("boss{suffix}"));
+            assert!(p.exists(), "Expected baked boss asset at {}", p.display());
+            assert!(std::fs::metadata(&p).expect("readable").len() > 0);
+        }
+        let manifest =
+            SpriteSheetManifest::load_from_file(boss_dir.join("boss.ron")).expect("boss.ron loads");
+        assert_eq!(manifest.frame_size, (144, 144));
+        for clip in ["idle", "f_smash", "down_special", "side_special", "neutral_special", "guard"]
+        {
+            assert!(manifest.animations.contains_key(clip), "boss.ron missing '{clip}'");
+        }
+
+        // 2. Trigger Boss Sanctum lockdown, drop Boss <= 50% -> Phase 2 Overdrive, then defeat -> Victory!
+        let (mut app, player) = physics_test_app(Vec2::new(2940.0, 240.0));
+        app.world_mut().spawn(SolidRect::from_min_max(
+            Vec2::new(2800.0, 196.0),
+            Vec2::new(3500.0, 220.0),
+        ));
+        app.world_mut().spawn(LockdownEncounter {
+            id: 3,
+            title: "IRON TITAN: VULCANUS".to_string(),
+            is_boss: true,
+            trigger_x: 2900.0,
+            min_x: 2820.0,
+            max_x: 3460.0,
+            floor_y: 220.0,
+            arena_center: Vec2::new(3140.0, 312.0),
+            spawn_right_gate: false,
+            waves: vec![vec![(EnemyArchetype::FoundryBoss, Vec2::new(3300.0, 254.0))]],
+            current_wave: 0,
+            phase: EncounterPhase::Idle,
+            active_enemies: Vec::new(),
+            gate_entities: Vec::new(),
+        });
+
+        step_fixed_ticks(&mut app, 2);
+        let boss_entity = app
+            .world_mut()
+            .query_filtered::<Entity, With<BossState>>()
+            .single(app.world())
+            .expect("Boss spawns upon entering Sanctum");
+        assert_eq!(app.world().get::<BossState>(boss_entity).unwrap().phase, 1);
+        assert_eq!(app.world().get::<EnemyHealth>(boss_entity).unwrap().max, 240.0);
+
+        // Deal 130 damage -> triggers Phase 2 Overdrive!
+        app.world_mut().write_message(CombatHitEvent {
+            attacker: player,
+            target: boss_entity,
+            hit_pos: Vec2::new(3300.0, 254.0),
+            damage: 130.0,
+            target_percent_after: 130.0,
+            knockback_mag: 220.0,
+            knockback_vec: Vec2::new(200.0, 90.0),
+            hitstop_frames: 6,
+            is_charged: true,
+        });
+        step_fixed_ticks(&mut app, 1);
+        assert_eq!(
+            app.world().get::<BossState>(boss_entity).unwrap().phase,
+            2,
+            "Dropping Boss <= 50% HP must trigger Phase 2 Overdrive"
+        );
+
+        // Deal finishing blow (150 damage) -> Boss despawns, encounter clears, Victory triggers!
+        app.world_mut().write_message(CombatHitEvent {
+            attacker: player,
+            target: boss_entity,
+            hit_pos: Vec2::new(3300.0, 254.0),
+            damage: 150.0,
+            target_percent_after: 280.0,
+            knockback_mag: 360.0,
+            knockback_vec: Vec2::new(320.0, 140.0),
+            hitstop_frames: 8,
+            is_charged: true,
+        });
+        step_fixed_ticks(&mut app, 1);
+        assert!(
+            app.world_mut()
+                .query::<&BossState>()
+                .iter(app.world())
+                .count()
+                == 0,
+            "Defeating Boss must despawn Boss entity"
+        );
+
+        // Advance past the 1.15s dramatic victory celebration delay (~75 fixed ticks) + update state
+        step_fixed_ticks(&mut app, 80);
+        app.update();
+        assert_eq!(
+            *app.world().resource::<State<AppState>>().get(),
+            AppState::Victory,
+            "Defeating End-of-Level Boss must transition cleanly to AppState::Victory!"
+        );
+        let _ = app.world().get::<KinematicBody>(player);
+    }
+
+    #[test]
+    fn test_boss_phase2_laser_telegraph_emits_before_firing() {
+        use crate::combat::CombatVisualEvent;
+        use crate::enemies::{BossState, EnemyFighter, TurretProjectile, spawn_foundry_boss};
+        use crate::physics::SolidRect;
+
+        let (mut app, _player) = physics_test_app(Vec2::new(4580.0, 240.0));
+        app.world_mut().spawn(SolidRect::from_min_max(
+            Vec2::new(4440.0, 196.0),
+            Vec2::new(5120.0, 220.0),
+        ));
+        let boss = {
+            let mut commands = app.world_mut().commands();
+            let id = spawn_foundry_boss(&mut commands, Vec2::new(4920.0, 250.0), 4460.0, 5100.0);
+            app.world_mut().flush();
+            id
+        };
+        // Settle boss grounded in Phase 2 right before Pattern C (pattern_step = 1 -> next is 2)
+        step_fixed_ticks(&mut app, 4);
+        {
+            let mut bs = app.world_mut().get_mut::<BossState>(boss).unwrap();
+            bs.phase = 2;
+            bs.enraged_triggered = true;
+            bs.pattern_step = 1;
+            let mut ef = app.world_mut().get_mut::<EnemyFighter>(boss).unwrap();
+            ef.special_cooldown = 0.0;
+        }
+
+        // Tick 1: Must emit BossLaserTelegraph BEFORE spawning any projectiles!
+        step_fixed_ticks(&mut app, 1);
+        let saw_telegraph = {
+            let msgs = app.world().resource::<Messages<CombatVisualEvent>>();
+            let mut cursor = msgs.get_cursor();
+            cursor
+                .read(msgs)
+                .any(|ev| matches!(ev, CombatVisualEvent::BossLaserTelegraph { duration, .. } if *duration >= 0.45))
+        };
+        assert!(
+            saw_telegraph,
+            "Vulcanus Phase 2 Forge Volley must emit a >=0.45s BossLaserTelegraph before firing!"
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<&TurretProjectile>()
+                .iter(app.world())
+                .count(),
+            0,
+            "Projectiles must NOT fire before the 0.48s laser sightline telegraph finishes!"
+        );
+
+        // Advance past the 0.48s telegraph (~32 ticks) -> 3-way volley fires cleanly!
+        step_fixed_ticks(&mut app, 32);
+        let fired = app
+            .world_mut()
+            .query::<&TurretProjectile>()
+            .iter(app.world())
+            .filter(|p| p.is_magma_wave)
+            .count();
+        assert_eq!(
+            fired, 3,
+            "Vulcanus must fire the 3-way molten fan after the 0.48s laser telegraph completes"
+        );
+    }
+
+    #[test]
+    fn test_all_moves_and_projectiles_never_multi_tick_single_target() {
+        use crate::combat::ComboTracker;
+        use crate::physics::{KinematicBody, MovementState, PlayerIntent, SolidRect};
+
+        // Audit Forward-Smash, Side-Special, and Neutral-Special Crescent Wave against a pinned enemy:
+        // each single attack MUST register strictly 1 hit (zero multi-ticking).
+        for (label, axis, is_special, target_x) in [
+            ("ForwardSmash", Vec2::new(1.0, 0.0), false, 28.0),
+            ("SideSpecial", Vec2::new(1.0, 0.0), true, 28.0),
+            ("NeutralSpecialWave", Vec2::ZERO, true, 54.0),
+        ] {
+            let (mut app, player) = physics_test_app(Vec2::new(0.0, 18.0));
+            app.world_mut().spawn(SolidRect::from_min_max(
+                Vec2::new(-200.0, -32.0),
+                Vec2::new(500.0, 0.0),
+            ));
+            let target = spawn_test_target(&mut app, Vec2::new(target_x, 18.0), 0.0);
+            step_fixed_ticks(&mut app, 2);
+
+            {
+                let mut b = app.world_mut().get_mut::<KinematicBody>(player).unwrap();
+                b.state = MovementState::Grounded;
+                b.facing = 1.0;
+                b.ground_speed = 0.0;
+                b.velocity = Vec2::ZERO;
+            }
+            {
+                let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+                intent.move_axis = axis;
+                intent.melee_just_pressed = !is_special;
+                intent.special_just_pressed = is_special;
+            }
+            step_fixed_ticks(&mut app, 1);
+            {
+                let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+                intent.melee_just_pressed = false;
+                intent.special_just_pressed = false;
+            }
+            // Pin target in place across the entire active duration of the move/wave!
+            for _ in 0..20 {
+                {
+                    let mut tb = app.world_mut().get_mut::<KinematicBody>(target).unwrap();
+                    tb.position = Vec2::new(target_x, 18.0);
+                    tb.velocity = Vec2::ZERO;
+                }
+                step_fixed_ticks(&mut app, 1);
+            }
+            assert_eq!(
+                app.world().resource::<ComboTracker>().hits,
+                1,
+                "{label} must hit a pinned target strictly ONCE (zero multi-ticking!)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_music_crossfade_resolver_and_audio_settings_clamping() {
+        use std::path::Path;
+        use crate::audio::music::{AudioSettings, MusicTrackId, resolve_desired_track};
+        use crate::enemies::EncounterStatus;
+
+        // 1. Verify all 4 converted Suno OGG tracks + README exist in assets/audio/music/
+        for fname in [
+            "stage1_theme.ogg",
+            "boss_theme.ogg",
+            "title_theme.ogg",
+            "stage_clear.ogg",
+            "README.md",
+        ] {
+            let p = Path::new("assets/audio/music").join(fname);
+            assert!(p.exists(), "Expected music asset at {}", p.display());
+            assert!(std::fs::metadata(&p).expect("readable").len() > 200);
+        }
+
+        // 2. Verify track state machine: Title -> Stage1 -> Boss -> KO fade (None) -> StageClear
+        let mut enc = EncounterStatus::default();
+        assert_eq!(
+            resolve_desired_track(AppState::Title, &enc, None),
+            Some(MusicTrackId::Title)
+        );
+        assert_eq!(
+            resolve_desired_track(AppState::Playing, &enc, Some(MusicTrackId::Title)),
+            Some(MusicTrackId::Stage1)
+        );
+        enc.active_title = Some("IRON TITAN: VULCANUS".into());
+        enc.is_boss = true;
+        assert_eq!(
+            resolve_desired_track(AppState::Playing, &enc, Some(MusicTrackId::Stage1)),
+            Some(MusicTrackId::Boss)
+        );
+        assert_eq!(
+            resolve_desired_track(AppState::Paused, &enc, Some(MusicTrackId::Boss)),
+            Some(MusicTrackId::Boss)
+        );
+        enc.victory_delay_timer = Some(0.9);
+        assert_eq!(
+            resolve_desired_track(AppState::Playing, &enc, Some(MusicTrackId::Boss)),
+            None
+        );
+        assert_eq!(
+            resolve_desired_track(AppState::Victory, &enc, None),
+            Some(MusicTrackId::StageClear)
+        );
+
+        // 3. Verify AudioSettings live clamping
+        let mut settings = AudioSettings::default();
+        settings.adjust_music(1.0);
+        assert_eq!(settings.music_volume, 1.0);
+        settings.adjust_music(-2.0);
+        assert_eq!(settings.music_volume, 0.0);
+        settings.adjust_sfx(0.5);
+        assert_eq!(settings.sfx_volume, 1.0);
+    }
+
+    // -------------------------------------------------------------------------
+    // Smash Moveset Deepening, 360° Sword Spin, Chargeable Smashes, Dodges & Enemy Kits
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_hurricane_sword_spin_and_down_smash_hit_both_sides_outward() {
+        use std::path::Path;
+        use crate::combat::{AttackKind, AttackState, DamagePercent};
+        use crate::physics::{KinematicBody, MovementState, PlayerIntent, SolidRect};
+        use crate::sprite_manifest::SpriteSheetManifest;
+
+        // 1. Verify ALL 6 freshly baked 28-clip character sprite sheets have the expanded Smash clips!
+        for pack in ["hero", "rogue", "barbarian", "mage", "assassin", "boss"] {
+            let manifest = SpriteSheetManifest::load_from_file(
+                Path::new("assets/sprites").join(pack).join(format!("{pack}.ron")),
+            )
+            .unwrap_or_else(|e| panic!("Baked {pack}.ron failed to load: {e}"));
+            for clip in [
+                "jab_2",
+                "jab_3",
+                "up_smash",
+                "down_smash",
+                "sword_spin",
+                "dodge_fwd",
+                "dodge_back",
+                "spot_dodge",
+                "taunt",
+            ] {
+                assert!(
+                    manifest.animations.contains_key(clip),
+                    "Sprite pack '{pack}' missing newly baked clip '{clip}'"
+                );
+            }
+        }
+
+        // 2. Grounded Up-B -> 360° Hurricane Sword Spin hits targets on BOTH left and right outward!
+        let (mut app, player) = physics_test_app(Vec2::new(0.0, 18.0));
+        app.world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-250.0, -32.0), Vec2::new(250.0, 0.0)));
+        let left_foe = spawn_test_target(&mut app, Vec2::new(-32.0, 18.0), 15.0);
+        let right_foe = spawn_test_target(&mut app, Vec2::new(32.0, 18.0), 15.0);
+        step_fixed_ticks(&mut app, 2);
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.move_axis = Vec2::new(0.0, 1.0);
+            intent.special_just_pressed = true;
+        }
+        step_fixed_ticks(&mut app, 1);
+        assert_eq!(
+            app.world().get::<AttackState>(player).unwrap().active_move,
+            Some(AttackKind::CycloneSpin)
+        );
+        let lv = app.world().get::<KinematicBody>(left_foe).unwrap().velocity;
+        let rv = app.world().get::<KinematicBody>(right_foe).unwrap().velocity;
+        assert!(
+            lv.x < -120.0 && rv.x > 120.0,
+            "360° Hurricane Sword Spin must launch left foe left and right foe right (lv={:?}, rv={:?})",
+            lv,
+            rv
+        );
+
+        // 3. Down-Smash (Boost + Down + Melee) sweeps BOTH sides outward with heavy damage!
+        let (mut app2, p2) = physics_test_app(Vec2::new(0.0, 18.0));
+        app2.world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-250.0, -32.0), Vec2::new(250.0, 0.0)));
+        let lf2 = spawn_test_target(&mut app2, Vec2::new(-30.0, 16.0), 0.0);
+        let rf2 = spawn_test_target(&mut app2, Vec2::new(30.0, 16.0), 0.0);
+        step_fixed_ticks(&mut app2, 2);
+        {
+            let mut b = app2.world_mut().get_mut::<KinematicBody>(p2).unwrap();
+            b.state = MovementState::Grounded;
+            b.ground_speed = 0.0;
+        }
+        {
+            let mut intent = app2.world_mut().get_mut::<PlayerIntent>(p2).unwrap();
+            intent.move_axis = Vec2::new(0.0, -1.0);
+            intent.boost_held = true;
+            intent.melee_just_pressed = true;
+            intent.melee_held = false;
+        }
+        step_fixed_ticks(&mut app2, 1);
+        assert_eq!(
+            app2.world().get::<AttackState>(p2).unwrap().active_move,
+            Some(AttackKind::DownSmash)
+        );
+        assert!(app2.world().get::<DamagePercent>(lf2).unwrap().0 >= 15.0);
+        assert!(app2.world().get::<DamagePercent>(rf2).unwrap().0 >= 15.0);
+        assert!(app2.world().get::<KinematicBody>(lf2).unwrap().velocity.x < -140.0);
+        assert!(app2.world().get::<KinematicBody>(rf2).unwrap().velocity.x > 140.0);
+    }
+
+    #[test]
+    fn test_chargeable_smash_scales_damage_and_knockback() {
+        use crate::combat::{AttackKind, AttackState, DamagePercent, SmashChargeState};
+        use crate::physics::{KinematicBody, MovementState, PlayerIntent, SolidRect};
+
+        // Run A: Uncharged Forward-Smash
+        let (mut app_un, p_un) = physics_test_app(Vec2::new(0.0, 18.0));
+        app_un
+            .world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-200.0, -32.0), Vec2::new(300.0, 0.0)));
+        let t_un = spawn_test_target(&mut app_un, Vec2::new(28.0, 18.0), 20.0);
+        step_fixed_ticks(&mut app_un, 2);
+        {
+            let mut intent = app_un.world_mut().get_mut::<PlayerIntent>(p_un).unwrap();
+            intent.move_axis = Vec2::new(1.0, 0.0);
+            intent.melee_just_pressed = true;
+            intent.melee_held = false;
+        }
+        step_fixed_ticks(&mut app_un, 1);
+        let uncharged_pct = app_un.world().get::<DamagePercent>(t_un).unwrap().0;
+        let uncharged_vx = app_un.world().get::<KinematicBody>(t_un).unwrap().velocity.x;
+
+        // Run B: Hold Melee for 0.65s (~39 ticks) -> Charged Forward-Smash!
+        let (mut app_ch, p_ch) = physics_test_app(Vec2::new(0.0, 18.0));
+        app_ch
+            .world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-200.0, -32.0), Vec2::new(300.0, 0.0)));
+        let t_ch = spawn_test_target(&mut app_ch, Vec2::new(28.0, 18.0), 20.0);
+        step_fixed_ticks(&mut app_ch, 2);
+        {
+            let mut b = app_ch.world_mut().get_mut::<KinematicBody>(p_ch).unwrap();
+            b.state = MovementState::Grounded;
+            b.ground_speed = 0.0;
+        }
+        {
+            let mut intent = app_ch.world_mut().get_mut::<PlayerIntent>(p_ch).unwrap();
+            intent.move_axis = Vec2::new(1.0, 0.0);
+            intent.melee_just_pressed = true;
+            intent.melee_held = true;
+        }
+        step_fixed_ticks(&mut app_ch, 1);
+        assert!(
+            app_ch
+                .world()
+                .get::<SmashChargeState>(p_ch)
+                .unwrap()
+                .is_charging(),
+            "Holding Melee on Forward-Smash must enter SmashChargeState"
+        );
+        {
+            let mut intent = app_ch.world_mut().get_mut::<PlayerIntent>(p_ch).unwrap();
+            intent.melee_just_pressed = false;
+        }
+        step_fixed_ticks(&mut app_ch, 38);
+        // Release Melee -> unleashes Charged Forward-Smash!
+        {
+            let mut intent = app_ch.world_mut().get_mut::<PlayerIntent>(p_ch).unwrap();
+            intent.melee_held = false;
+        }
+        step_fixed_ticks(&mut app_ch, 1);
+        assert_eq!(
+            app_ch.world().get::<AttackState>(p_ch).unwrap().active_move,
+            Some(AttackKind::ForwardSmash)
+        );
+        let charged_pct = app_ch.world().get::<DamagePercent>(t_ch).unwrap().0;
+        let charged_vx = app_ch.world().get::<KinematicBody>(t_ch).unwrap().velocity.x;
+        assert!(
+            charged_pct > uncharged_pct + 6.0 && charged_vx > uncharged_vx + 60.0,
+            "Charged Smash must significantly out-damage & out-launch uncharged (pct {} vs {}, vx {} vs {})",
+            charged_pct,
+            uncharged_pct,
+            charged_vx,
+            uncharged_vx
+        );
+    }
+
+    #[test]
+    fn test_smash_roll_dodge_spot_dodge_and_fast_fall() {
+        use crate::combat::{GroundDodgeKind, GroundDodgeState, Invulnerable, ShieldState};
+        use crate::physics::{KinematicBody, MovementState, PlayerIntent, SolidRect};
+
+        // 1. Shield + Right -> RollForward with i-frames & facing flip on finish!
+        let (mut app, player) = physics_test_app(Vec2::new(0.0, 18.0));
+        app.world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-200.0, -32.0), Vec2::new(200.0, 0.0)));
+        step_fixed_ticks(&mut app, 2);
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.guard_held = true;
+        }
+        step_fixed_ticks(&mut app, 1);
+        assert!(app.world().get::<ShieldState>(player).unwrap().active);
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.right_just_pressed = true;
+            intent.move_axis = Vec2::new(1.0, 0.0);
+        }
+        step_fixed_ticks(&mut app, 1);
+        let gd = app.world().get::<GroundDodgeState>(player).unwrap();
+        assert_eq!(gd.kind, GroundDodgeKind::RollForward);
+        assert!(gd.is_active());
+        assert!(
+            app.world()
+                .get::<Invulnerable>(player)
+                .is_some_and(Invulnerable::is_active),
+            "Roll-Dodge must grant invulnerability frames"
+        );
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.right_just_pressed = false;
+            intent.guard_held = false;
+            intent.move_axis = Vec2::ZERO;
+        }
+        step_fixed_ticks(&mut app, 16);
+        let body = app.world().get::<KinematicBody>(player).unwrap();
+        assert!(body.position.x > 30.0, "Roll-Dodge must slide player forward, got x={}", body.position.x);
+        assert!(body.facing < 0.0, "Smash Roll-Dodge must auto-face back toward origin at finish");
+
+        // 2. Shield + Down -> Spot-Dodge with i-frames in place!
+        let x_before_spot = body.position.x;
+        step_fixed_ticks(&mut app, 6);
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.guard_held = true;
+        }
+        step_fixed_ticks(&mut app, 1);
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.down_just_pressed = true;
+            intent.move_axis = Vec2::new(0.0, -1.0);
+        }
+        step_fixed_ticks(&mut app, 1);
+        let gd2 = app.world().get::<GroundDodgeState>(player).unwrap();
+        assert_eq!(gd2.kind, GroundDodgeKind::Spot);
+        assert!(gd2.is_active());
+        assert!((app.world().get::<KinematicBody>(player).unwrap().position.x - x_before_spot).abs() < 2.0);
+
+        // 3. Airborne Down past jump apex -> Fast-Fall snaps velocity sharply downward!
+        let (mut app_ff, p_ff) = physics_test_app(Vec2::new(0.0, 220.0));
+        {
+            let mut b = app_ff.world_mut().get_mut::<KinematicBody>(p_ff).unwrap();
+            b.state = MovementState::Airborne;
+            b.velocity = Vec2::new(0.0, -10.0);
+        }
+        {
+            let mut intent = app_ff.world_mut().get_mut::<PlayerIntent>(p_ff).unwrap();
+            intent.down_just_pressed = true;
+            intent.move_axis = Vec2::new(0.0, -1.0);
+        }
+        step_fixed_ticks(&mut app_ff, 1);
+        let vy = app_ff.world().get::<KinematicBody>(p_ff).unwrap().velocity.y;
+        assert!(vy <= -450.0, "Fast-Fall must snap downward speed sharply, got vy={}", vy);
+    }
+
+    #[test]
+    fn test_right_dpad_simultaneous_shield_lockout_and_control_config() {
+        use bevy::input::gamepad::{
+            GamepadConnection, GamepadConnectionEvent, RawGamepadButtonChangedEvent,
+            RawGamepadEvent,
+        };
+        use crate::input::{ControlConfig, ShieldButtonMode};
+        use crate::physics::PlayerIntent;
+        use crate::player::Player;
+
+        let mut app = headless_test_app();
+        app.world_mut().write_message(GameStateCommand::StartGame);
+        app.update();
+
+        let gp = app.world_mut().spawn_empty().id();
+        app.world_mut().write_message(GamepadConnectionEvent::new(
+            gp,
+            GamepadConnection::Connected {
+                name: "QuirkyRightDpadPad".into(),
+                vendor_id: None,
+                product_id: None,
+            },
+        ));
+        app.update();
+
+        // 1. Simulate broken controller firing DPadRight + LeftTrigger simultaneously -> MUST move right, NEVER Shield!
+        app.world_mut()
+            .write_message(RawGamepadEvent::Button(RawGamepadButtonChangedEvent::new(
+                gp,
+                GamepadButton::DPadRight,
+                1.0,
+            )));
+        app.world_mut()
+            .write_message(RawGamepadEvent::Button(RawGamepadButtonChangedEvent::new(
+                gp,
+                GamepadButton::LeftTrigger,
+                1.0,
+            )));
+        app.update();
+        step_fixed_ticks(&mut app, 1);
+
+        let player = app
+            .world_mut()
+            .query_filtered::<Entity, With<Player>>()
+            .single(app.world())
+            .expect("Player exists");
+        let intent = *app.world().get::<PlayerIntent>(player).unwrap();
+        assert!(intent.move_axis.x > 0.5, "Must move right cleanly, got {:?}", intent.move_axis);
+        assert!(
+            !intent.guard_held,
+            "Simultaneous DPadRight + LeftTrigger glitch must NEVER activate Shield!"
+        );
+
+        // 2. Switch ControlConfig to LtOnly -> pressing LeftTrigger alone NEVER activates Shield!
+        app.world_mut()
+            .write_message(RawGamepadEvent::Button(RawGamepadButtonChangedEvent::new(
+                gp,
+                GamepadButton::DPadRight,
+                0.0,
+            )));
+        app.world_mut()
+            .write_message(RawGamepadEvent::Button(RawGamepadButtonChangedEvent::new(
+                gp,
+                GamepadButton::LeftTrigger,
+                0.0,
+            )));
+        app.world_mut().resource_mut::<ControlConfig>().shield_mode = ShieldButtonMode::LtOnly;
+        app.update();
+        step_fixed_ticks(&mut app, 1);
+
+        app.world_mut()
+            .write_message(RawGamepadEvent::Button(RawGamepadButtonChangedEvent::new(
+                gp,
+                GamepadButton::LeftTrigger,
+                1.0,
+            )));
+        app.update();
+        step_fixed_ticks(&mut app, 1);
+        assert!(
+            !app.world().get::<PlayerIntent>(player).unwrap().guard_held,
+            "ShieldButtonMode::LtOnly must completely ignore LeftTrigger (LB)"
+        );
+    }
+
+    #[test]
+    fn test_expanded_enemy_movesets_whirlwind_and_arcane_pillar() {
+        use crate::combat::DualSidedHitbox;
+        use crate::enemies::{
+            EnemyArchetype, EnemyFighter, PendingArcanePillar, spawn_enemy_fighter,
+        };
+        use crate::physics::SolidRect;
+
+        // 1. Iron Brawler on pattern_counter=1 unleashes 360° Whirlwind Greataxe Spin (`variant 6`)!
+        let (mut app, _player) = physics_test_app(Vec2::new(1000.0, 240.0));
+        app.world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(800.0, 196.0), Vec2::new(1300.0, 220.0)));
+        let brawler = {
+            let mut commands = app.world_mut().commands();
+            let id = spawn_enemy_fighter(
+                &mut commands,
+                EnemyArchetype::HeavyBrawler,
+                Vec2::new(1055.0, 240.0),
+                false,
+            );
+            app.world_mut().flush();
+            id
+        };
+        {
+            let mut f = app.world_mut().get_mut::<EnemyFighter>(brawler).unwrap();
+            f.special_cooldown = 0.0;
+            f.pattern_counter = 1; // Triggers Whirlwind Greataxe Spin!
+        }
+        step_fixed_ticks(&mut app, 45);
+        assert_eq!(
+            app.world().get::<EnemyFighter>(brawler).unwrap().attack_variant,
+            6,
+            "Iron Brawler must telegraph and unleash Whirlwind Greataxe Spin (variant 6)"
+        );
+        assert!(
+            app.world_mut()
+                .query::<&DualSidedHitbox>()
+                .iter(app.world())
+                .count()
+                >= 1,
+            "Brawler Whirlwind Spin must spawn a DualSidedHitbox"
+        );
+
+        // 2. Plasma Arcanist on pattern_counter=1 summons a delayed PendingArcanePillar under P1!
+        let (mut app2, _p2) = physics_test_app(Vec2::new(880.0, 240.0));
+        app2.world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(780.0, 196.0), Vec2::new(1300.0, 220.0)));
+        let mage = {
+            let mut commands = app2.world_mut().commands();
+            let id = spawn_enemy_fighter(
+                &mut commands,
+                EnemyArchetype::ArcaneZoner,
+                Vec2::new(1060.0, 240.0),
+                false,
+            );
+            app2.world_mut().flush();
+            id
+        };
+        {
+            let mut f = app2.world_mut().get_mut::<EnemyFighter>(mage).unwrap();
+            f.special_cooldown = 0.0;
+            f.pattern_counter = 1; // Triggers Arcane Pillar Eruption!
+        }
+        step_fixed_ticks(&mut app2, 42);
+        assert!(
+            app2.world_mut()
+                .query::<&PendingArcanePillar>()
+                .iter(app2.world())
+                .count()
+                >= 1,
+            "Plasma Arcanist must summon a telegraphed PendingArcanePillar ground rune"
+        );
     }
 }

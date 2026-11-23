@@ -13,6 +13,7 @@ pub enum AppState {
     Title,
     Playing,
     Paused,
+    Victory,
 }
 
 /// Commands requesting a transition between [`AppState`] variants or app exit.
@@ -22,6 +23,7 @@ pub enum GameStateCommand {
     TogglePause,
     ResumeGame,
     RestartStage,
+    StageCleared,
     ReturnToTitle,
     QuitGame,
 }
@@ -75,7 +77,7 @@ pub fn apply_game_state_commands(
                     logical_state = AppState::Playing;
                     changed = true;
                 }
-                AppState::Title => {}
+                AppState::Title | AppState::Victory => {}
             },
             GameStateCommand::ResumeGame => {
                 if logical_state == AppState::Paused {
@@ -86,6 +88,10 @@ pub fn apply_game_state_commands(
             GameStateCommand::RestartStage => {
                 restart_writer.write(StageRestartEvent);
                 logical_state = AppState::Playing;
+                changed = true;
+            }
+            GameStateCommand::StageCleared => {
+                logical_state = AppState::Victory;
                 changed = true;
             }
             GameStateCommand::ReturnToTitle => {

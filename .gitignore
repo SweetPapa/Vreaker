@@ -1,11 +1,15 @@
 # Rust build output
 /target/
 
-# Large CC0 asset drops & cloned external repos
+# Large CC0 asset drops, raw audio masters & cloned external repos
 /raw_assets/*
 !/raw_assets/README.md
 /external_assets/
 /*.zip
+/*.wav
+
+# User-local controller calibration & config overrides
+/assets/config/*.ron
 
 # OS / editor noise
 .DS_Store

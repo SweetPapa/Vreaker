@@ -20,18 +20,23 @@ use bevy::transform::TransformSystems;
 use bevy::window::{PrimaryWindow, WindowResized};
 
 use crate::combat::{
-    AttackKind, AttackState, BusterProjectile, BusterShotEvent, BusterState, CombatHitEvent,
-    Hitstop, Hitstun, Invulnerable,
+    AirDodgeState, AttackKind, AttackState, BreakerWaveProjectile, BusterProjectile,
+    BusterShotEvent, BusterState, CombatHitEvent, CombatVisualEvent, CounterStance, DamagePercent,
+    GroundDodgeState, Hitstop, Hitstun, Invulnerable, MeteorDiveState, ShieldState,
+    SmashChargeState,
 };
 use crate::enemies::{
-    BlastEdge, BlastZone, BlastZoneKoEvent, EnemyAiState, EnemyArchetype, EnemyFighter,
-    TurretProjectile, WallTurret,
+    BlastEdge, BlastZone, BlastZoneKoEvent, BossState, EncounterStatus, EnemyAiState,
+    EnemyArchetype, EnemyFighter, EnemyHealth, LockdownGate, TurretProjectile, WallTurret,
 };
 use crate::physics::{
-    BoostPad, KinematicBody, LoopSpline, MovementState, MovingPlatform, OneWayPlatform,
-    PhysicsConfig, SlopeSegment, SolidRect, SpikeHazard,
+    BoostPad, KinematicBody, LoopSpline, MovementEvent, MovementFxKind, MovementState,
+    MovingPlatform, OneWayPlatform, PhysicsConfig, SlopeSegment, SolidRect, SpikeHazard,
 };
-use crate::player::{Player, PlayerFeetPivot, PlayerSpawnPoint, PlayerSpriteVisual};
+use crate::player::{
+    Player, PlayerFeetPivot, PlayerP1Marker, PlayerRespawnState, PlayerSpawnPoint,
+    PlayerSpriteVisual, RespawnAngelPlatformVisual,
+};
 use crate::sprite_manifest::SpriteSheetManifest;
 use crate::state::{AppState, StageRestartEvent};
 
@@ -87,6 +92,32 @@ pub fn compute_integer_viewport(
 /// Resource storing the offscreen pixel-art render target handle.
 #[derive(Resource, Debug, Clone)]
 pub struct PixelCanvasImage(pub Handle<Image>);
+
+/// Cached Foundry pixel-art environment textures loaded gracefully from `assets/textures/foundry/`.
+#[derive(Resource, Debug, Default, Clone)]
+struct FoundryArtAssets {
+    bg_far: Option<Handle<Image>>,
+    bg_mid: Option<Handle<Image>>,
+    tile_metal: Option<Handle<Image>>,
+}
+
+/// Seamless horizontal scrolling parallax layer tile anchored to `PixelWorldCamera`.
+#[derive(Component, Debug, Clone, Copy)]
+struct ParallaxLayer {
+    factor_x: f32,
+    factor_y: f32,
+    tile_index: i32,
+    tile_width: f32,
+    z: f32,
+}
+
+/// Cadence timer for directional Smash knockback smoke trails behind launched fighters.
+#[derive(Resource, Debug, Default)]
+struct SmokeTrailTimer(f32);
+
+/// Visual Smash energy shield bubble child attached to the player.
+#[derive(Component, Debug)]
+struct ShieldBubbleVisual;
 
 /// Cached hero sprite handles reused by translucent Sonic speed afterimage ghosts.
 #[derive(Resource, Debug, Clone)]
@@ -164,11 +195,19 @@ struct BusterChargeAura {
     pulse: f32,
 }
 
-/// Child visual of an [`EnemyFighter`] driving baked Rogue/Barbarian sprites + hitstop jitter.
+/// Child visual of an [`EnemyFighter`] driving baked sprites + hitstop jitter.
 #[derive(Component, Debug)]
 struct EnemySpriteVisual {
     owner: Entity,
     jitter_phase: f32,
+    base_y: f32,
+}
+
+/// Miniature pixel-art overhead HP fill bar attached to regular stage & ambush enemies.
+#[derive(Component, Debug)]
+struct EnemyHealthBarFill {
+    owner: Entity,
+    max_width: f32,
 }
 
 /// Child visual marker for a [`WallTurret`] cannon & telegraph LED.
@@ -192,6 +231,33 @@ struct SmashKoFlashBeam {
     max_lifetime: f32,
 }
 
+/// Curved neon pixel-art blade trail segment emitted by melee & special swings.
+#[derive(Component, Debug)]
+struct SlashArcSeg {
+    velocity: Vec2,
+    lifetime: f32,
+    max_lifetime: f32,
+    base_len: f32,
+}
+
+/// Expanding octagonal neon shockwave ring segment for counters, slams, stomps, and warps.
+#[derive(Component, Debug)]
+struct ShockwaveRingSeg {
+    center: Vec2,
+    angle: f32,
+    max_radius: f32,
+    lifetime: f32,
+    max_lifetime: f32,
+}
+
+/// Pulsing amber-gold aiming warning sightline shown during Vulcanus's 0.48s Phase 2 laser telegraph!
+#[derive(Component, Debug)]
+struct BossSightlineFx {
+    lifetime: f32,
+    max_lifetime: f32,
+    length: f32,
+}
+
 /// Tracks the last started melee move on the visual animator so combo hits restart cleanly.
 #[derive(Resource, Debug, Default)]
 struct LastVisualAttack {
@@ -207,15 +273,26 @@ pub struct RenderingPlugin;
 impl Plugin for RenderingPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(Material2dPlugin::<SpriteLitMaterial>::default())
+            .init_resource::<FoundryArtAssets>()
             .init_resource::<CameraShake>()
             .init_resource::<LastVisualAttack>()
             .init_resource::<AfterimageSpawner>()
-            .add_systems(Startup, (setup_pixel_cameras, spawn_foundry_backdrop))
+            .init_resource::<SmokeTrailTimer>()
+            .add_systems(
+                Startup,
+                (
+                    load_foundry_art_assets,
+                    setup_pixel_cameras,
+                    spawn_foundry_backdrop,
+                )
+                    .chain(),
+            )
             .add_systems(
                 Update,
                 (
                     decorate_added_player,
                     decorate_added_solids,
+                    decorate_added_lockdown_gates,
                     decorate_added_slopes,
                     decorate_added_one_ways,
                     decorate_added_boost_pads,
@@ -224,6 +301,7 @@ impl Plugin for RenderingPlugin {
                     decorate_added_wall_turrets,
                     decorate_added_enemy_fighters,
                     decorate_added_buster_projectiles,
+                    decorate_added_breaker_waves,
                     decorate_added_turret_projectiles,
                     decorate_added_blast_zones,
                 ),
@@ -235,20 +313,64 @@ impl Plugin for RenderingPlugin {
                     drive_player_visuals_and_animations,
                     spawn_and_fade_speed_afterimages,
                     update_buster_charge_aura,
+                    update_shield_bubble_visual,
+                    update_respawn_angel_platform_and_p1_marker,
                     drive_enemy_fighter_visuals,
+                    update_enemy_health_bars,
                     update_wall_turret_visuals,
                     handle_combat_hit_and_shot_fx,
+                    handle_combat_visual_events,
+                    spawn_movement_particles,
+                    spawn_knockback_smoke_trails,
                     handle_blast_zone_ko_flash,
                     update_hit_sparks_and_ko_beams,
+                    update_slash_and_shockwave_fx,
                     update_follow_camera,
+                    update_parallax_backdrop,
                     animate_hero_companion_light,
-                ),
+                )
+                    .chain(),
             )
             .add_systems(
                 PostUpdate,
                 sprite_lit::sync_sprite_lit_materials.after(TransformSystems::Propagate),
             );
     }
+}
+
+fn load_nearest_texture_if_exists(
+    asset_server: &AssetServer,
+    rel_path: &str,
+) -> Option<Handle<Image>> {
+    if Path::new("assets").join(rel_path).exists() {
+        Some(
+            asset_server
+                .load_builder()
+                .with_settings(|s: &mut ImageLoaderSettings| {
+                    s.is_srgb = true;
+                    s.sampler = ImageSampler::nearest();
+                })
+                .load(rel_path.to_string()),
+        )
+    } else {
+        warn!(
+            "Optional Foundry texture missing at assets/{}; using fallback visuals.",
+            rel_path
+        );
+        None
+    }
+}
+
+fn load_foundry_art_assets(
+    asset_server: Res<AssetServer>,
+    mut foundry: ResMut<FoundryArtAssets>,
+) {
+    foundry.bg_far =
+        load_nearest_texture_if_exists(&asset_server, "textures/foundry/foundry_bg_far.png");
+    foundry.bg_mid =
+        load_nearest_texture_if_exists(&asset_server, "textures/foundry/foundry_bg_mid.png");
+    foundry.tile_metal =
+        load_nearest_texture_if_exists(&asset_server, "textures/foundry/foundry_tile_metal.png");
 }
 
 fn setup_pixel_cameras(
@@ -358,31 +480,77 @@ fn sync_canvas_integer_scale(
     }
 }
 
-fn spawn_foundry_backdrop(mut commands: Commands) {
+fn spawn_foundry_backdrop(mut commands: Commands, foundry: Res<FoundryArtAssets>) {
     let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
-    let grid_color = Color::srgb(0.06, 0.09, 0.14);
 
-    for x in (-448..=1920).step_by(64) {
-        commands.spawn((
-            Sprite {
-                color: grid_color,
-                custom_size: Some(Vec2::new(1.0, 1080.0)),
-                ..default()
-            },
-            Transform::from_xyz(x as f32, 160.0, -20.0),
-            world_layer.clone(),
-        ));
+    // Spawn seamless 3-tile parallax Foundry cavern layers when local WARLOCK textures are present;
+    // otherwise fall back gracefully to the crisp geometric blueprint grid.
+    if let Some(ref bg_far) = foundry.bg_far {
+        for tile_index in -1..=1 {
+            commands.spawn((
+                Name::new(format!("FoundryParallaxFar_{tile_index}")),
+                ParallaxLayer {
+                    factor_x: 0.18,
+                    factor_y: 0.08,
+                    tile_index,
+                    tile_width: VIRTUAL_WIDTH as f32,
+                    z: -26.0,
+                },
+                Sprite {
+                    image: bg_far.clone(),
+                    custom_size: Some(Vec2::new(VIRTUAL_WIDTH as f32, VIRTUAL_HEIGHT as f32)),
+                    ..default()
+                },
+                Transform::from_xyz(tile_index as f32 * VIRTUAL_WIDTH as f32, 20.0, -26.0),
+                world_layer.clone(),
+            ));
+        }
+    } else {
+        let grid_color = Color::srgb(0.06, 0.09, 0.14);
+        for x in (-448..=1920).step_by(64) {
+            commands.spawn((
+                Sprite {
+                    color: grid_color,
+                    custom_size: Some(Vec2::new(1.0, 1080.0)),
+                    ..default()
+                },
+                Transform::from_xyz(x as f32, 160.0, -20.0),
+                world_layer.clone(),
+            ));
+        }
+        for y in (-256..=640).step_by(64) {
+            commands.spawn((
+                Sprite {
+                    color: grid_color,
+                    custom_size: Some(Vec2::new(2400.0, 1.0)),
+                    ..default()
+                },
+                Transform::from_xyz(720.0, y as f32, -20.0),
+                world_layer.clone(),
+            ));
+        }
     }
-    for y in (-256..=640).step_by(64) {
-        commands.spawn((
-            Sprite {
-                color: grid_color,
-                custom_size: Some(Vec2::new(2400.0, 1.0)),
-                ..default()
-            },
-            Transform::from_xyz(720.0, y as f32, -20.0),
-            world_layer.clone(),
-        ));
+
+    if let Some(ref bg_mid) = foundry.bg_mid {
+        for tile_index in -1..=1 {
+            commands.spawn((
+                Name::new(format!("FoundryParallaxMid_{tile_index}")),
+                ParallaxLayer {
+                    factor_x: 0.42,
+                    factor_y: 0.18,
+                    tile_index,
+                    tile_width: VIRTUAL_WIDTH as f32,
+                    z: -16.0,
+                },
+                Sprite {
+                    image: bg_mid.clone(),
+                    custom_size: Some(Vec2::new(VIRTUAL_WIDTH as f32, VIRTUAL_HEIGHT as f32)),
+                    ..default()
+                },
+                Transform::from_xyz(tile_index as f32 * VIRTUAL_WIDTH as f32, 20.0, -16.0),
+                world_layer.clone(),
+            ));
+        }
     }
 
     commands.spawn((
@@ -421,12 +589,22 @@ fn spawn_foundry_backdrop(mut commands: Commands) {
         Transform::from_xyz(-200.0, 20.0, 6.0),
     ));
 
-    // Overhead foundry zone lamps (Zone A ramp, Zone B shaft, Zone C Smash Arena)
+    // Overhead foundry zone lamps spanning the full 5,600px Stage 1: Foundry Citadel
     for (lx, ly, color, radius) in [
         (-160.0, 110.0, LinearRgba::new(0.22, 0.85, 1.0, 1.0), 270.0),
-        (892.0, 150.0, LinearRgba::new(1.0, 0.56, 0.18, 1.0), 300.0),
-        (1245.0, 390.0, LinearRgba::new(0.28, 0.88, 1.0, 1.0), 360.0),
-        (1535.0, 390.0, LinearRgba::new(1.0, 0.62, 0.24, 1.0), 360.0),
+        (160.0, 145.0, LinearRgba::new(0.32, 0.80, 1.0, 1.0), 280.0),
+        (560.0, 160.0, LinearRgba::new(1.0, 0.56, 0.18, 1.0), 300.0),
+        (1020.0, 410.0, LinearRgba::new(0.28, 0.88, 1.0, 1.0), 360.0),
+        (1320.0, 410.0, LinearRgba::new(1.0, 0.56, 0.22, 1.0), 360.0),
+        (1680.0, 390.0, LinearRgba::new(0.25, 0.90, 1.0, 1.0), 340.0),
+        (2060.0, 400.0, LinearRgba::new(1.0, 0.48, 0.20, 1.0), 350.0),
+        (2440.0, 405.0, LinearRgba::new(0.25, 0.88, 1.0, 1.0), 360.0),
+        (2880.0, 445.0, LinearRgba::new(1.0, 0.58, 0.22, 1.0), 360.0),
+        (3500.0, 415.0, LinearRgba::new(1.0, 0.42, 0.26, 1.0), 360.0),
+        (3780.0, 415.0, LinearRgba::new(0.30, 0.86, 1.0, 1.0), 360.0),
+        (4220.0, 390.0, LinearRgba::new(1.0, 0.28, 0.18, 1.0), 340.0),
+        (4640.0, 425.0, LinearRgba::new(1.0, 0.36, 0.16, 1.0), 390.0),
+        (4940.0, 425.0, LinearRgba::new(1.0, 0.55, 0.18, 1.0), 400.0),
     ] {
         commands.spawn((
             PointLight2d {
@@ -445,6 +623,41 @@ fn spawn_foundry_backdrop(mut commands: Commands) {
             world_layer.clone(),
         ));
     }
+
+    // Smash-style glowing Angel Respawn Platform (hidden until PlayerRespawnState.active)
+    commands
+        .spawn((
+            Name::new("RespawnAngelPlatform"),
+            RespawnAngelPlatformVisual,
+            Sprite {
+                color: Color::linear_rgb(0.4, 3.6, 5.0),
+                custom_size: Some(Vec2::new(44.0, 6.0)),
+                ..default()
+            },
+            Transform::from_xyz(0.0, 0.0, 5.0),
+            Visibility::Hidden,
+            world_layer.clone(),
+        ))
+        .with_children(|plat| {
+            plat.spawn((
+                Sprite {
+                    color: Color::linear_rgba(4.4, 3.2, 0.9, 0.55),
+                    custom_size: Some(Vec2::new(28.0, 3.0)),
+                    ..default()
+                },
+                Transform::from_xyz(0.0, -4.0, -0.1),
+                world_layer.clone(),
+            ));
+            plat.spawn((
+                Sprite {
+                    color: Color::linear_rgba(0.3, 2.8, 4.5, 0.30),
+                    custom_size: Some(Vec2::new(12.0, 10.0)),
+                    ..default()
+                },
+                Transform::from_xyz(0.0, -10.0, -0.2),
+                world_layer.clone(),
+            ));
+        });
 }
 
 struct BakedSpriteHandles {
@@ -552,6 +765,61 @@ fn decorate_added_player(
                 Transform::from_xyz(0.0, 2.0, -1.0),
                 world_layer.clone(),
             ));
+            parent.spawn((
+                Name::new("ShieldBubbleVisual"),
+                ShieldBubbleVisual,
+                Sprite {
+                    color: Color::linear_rgba(0.2, 3.0, 4.4, 0.0),
+                    custom_size: Some(Vec2::new(42.0, 48.0)),
+                    ..default()
+                },
+                Transform::from_xyz(0.0, 2.0, 4.5),
+                world_layer.clone(),
+            ));
+            // Crisp cyan personal rim light so P1 always stands out in melee pileups
+            parent.spawn((
+                Name::new("HeroCyanRimLight"),
+                PointLight2d {
+                    color: LinearRgba::new(0.22, 0.90, 1.0, 1.0),
+                    intensity: 1.45,
+                    radius: 82.0,
+                    height: 22.0,
+                    falloff: 1.6,
+                },
+                Transform::from_xyz(0.0, 8.0, 4.0),
+            ));
+            // Floating P1 cyan downward triangle indicator directly above the player's head
+            parent
+                .spawn((
+                    Name::new("PlayerP1Marker"),
+                    PlayerP1Marker,
+                    Transform::from_xyz(0.0, 36.0, 8.5),
+                    Visibility::default(),
+                ))
+                .with_children(|m| {
+                    // Crisp downward pixel-art cyan chevron triangle
+                    for (y_off, w) in [(6.0, 10.0), (4.0, 8.0), (2.0, 5.0), (0.0, 2.0)] {
+                        m.spawn((
+                            Sprite {
+                                color: Color::linear_rgb(0.35, 3.8, 5.2),
+                                custom_size: Some(Vec2::new(w, 2.0)),
+                                ..default()
+                            },
+                            Transform::from_xyz(0.0, y_off, 0.1),
+                            world_layer.clone(),
+                        ));
+                    }
+                    // Tiny bright white-cyan P1 accent bar above triangle
+                    m.spawn((
+                        Sprite {
+                            color: Color::linear_rgb(2.6, 4.4, 5.2),
+                            custom_size: Some(Vec2::new(10.0, 2.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(0.0, 9.5, 0.2),
+                        world_layer.clone(),
+                    ));
+                });
         });
 
         if let Some(baked) = load_baked_sprite_handles(
@@ -607,16 +875,36 @@ fn decorate_added_player(
     }
 }
 
-fn decorate_added_solids(mut commands: Commands, added: Query<(Entity, &SolidRect), Added<SolidRect>>) {
+#[allow(clippy::type_complexity)]
+fn decorate_added_solids(
+    mut commands: Commands,
+    foundry: Res<FoundryArtAssets>,
+    added: Query<(Entity, &SolidRect), (Added<SolidRect>, Without<LockdownGate>)>,
+) {
     let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
     for (entity, rect) in &added {
         let size = rect.half_extents * 2.0;
-        commands.entity(entity).insert((
+        let sprite = if let Some(ref tile_img) = foundry.tile_metal {
+            Sprite {
+                image: tile_img.clone(),
+                color: Color::srgb(0.92, 0.95, 1.0),
+                custom_size: Some(size),
+                image_mode: SpriteImageMode::Tiled {
+                    tile_x: true,
+                    tile_y: true,
+                    stretch_value: 1.0,
+                },
+                ..default()
+            }
+        } else {
             Sprite {
                 color: Color::srgb(0.14, 0.18, 0.26),
                 custom_size: Some(size),
                 ..default()
-            },
+            }
+        };
+        commands.entity(entity).insert((
+            sprite,
             Transform::from_xyz(rect.center.x, rect.center.y, -6.0),
             world_layer.clone(),
         ));
@@ -648,6 +936,71 @@ fn decorate_added_solids(mut commands: Commands, added: Query<(Entity, &SolidRec
                 world_layer.clone(),
             ));
         }
+    }
+}
+
+/// Decorates active [`LockdownGate`] laser barriers with glowing crimson/amber plasma energy beams.
+fn decorate_added_lockdown_gates(
+    mut commands: Commands,
+    added: Query<(Entity, &LockdownGate, &SolidRect), Added<LockdownGate>>,
+) {
+    let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
+    for (entity, gate, rect) in &added {
+        let size = rect.half_extents * 2.0;
+        let outer_col = if gate.is_boss {
+            Color::linear_rgba(5.0, 1.4, 0.30, 0.72)
+        } else {
+            Color::linear_rgba(4.8, 0.42, 0.55, 0.72)
+        };
+        let core_col = Color::linear_rgb(5.4, 4.2, 2.2);
+        let light_col = if gate.is_boss {
+            LinearRgba::new(1.0, 0.45, 0.12, 1.0)
+        } else {
+            LinearRgba::new(1.0, 0.22, 0.35, 1.0)
+        };
+
+        commands
+            .entity(entity)
+            .insert((
+                Sprite {
+                    color: outer_col,
+                    custom_size: Some(size),
+                    ..default()
+                },
+                PointLight2d {
+                    color: light_col,
+                    intensity: 2.8,
+                    radius: 170.0,
+                    height: 28.0,
+                    falloff: 1.4,
+                },
+                Transform::from_xyz(rect.center.x, rect.center.y, 4.2),
+                world_layer.clone(),
+            ))
+            .with_children(|parent| {
+                // Bright white-hot plasma laser core down the center of the barrier
+                parent.spawn((
+                    Sprite {
+                        color: core_col,
+                        custom_size: Some(Vec2::new(4.0, size.y)),
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, 0.0, 0.2),
+                    world_layer.clone(),
+                ));
+                // Horizontal energy lock emitters spaced along the gate
+                for step in -3..=3 {
+                    parent.spawn((
+                        Sprite {
+                            color: Color::linear_rgb(4.6, 2.2, 0.6),
+                            custom_size: Some(Vec2::new(size.x + 6.0, 3.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(0.0, step as f32 * 34.0, 0.3),
+                        world_layer.clone(),
+                    ));
+                }
+            });
     }
 }
 
@@ -904,9 +1257,18 @@ fn decorate_added_enemy_fighters(
     let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
 
     for (entity, fighter, body) in &added {
+        let is_boss = fighter.archetype == EnemyArchetype::FoundryBoss;
         let pack = match fighter.archetype {
             EnemyArchetype::LightStriker => "rogue",
             EnemyArchetype::HeavyBrawler => "barbarian",
+            EnemyArchetype::ArcaneZoner => "mage",
+            EnemyArchetype::ShadowAssassin => "assassin",
+            EnemyArchetype::FoundryBoss => "boss",
+        };
+        let foot_offset_y = if is_boss {
+            54.0 - body.half_extents.y
+        } else {
+            36.0 - body.half_extents.y
         };
 
         if let Some(baked) = load_baked_sprite_handles(
@@ -916,26 +1278,42 @@ fn decorate_added_enemy_fighters(
             pack,
             "idle",
         ) {
-            let foot_offset_y = 36.0 - body.half_extents.y;
             commands.entity(entity).with_children(|parent| {
                 parent.spawn((
                     Name::new(format!("EnemyVisual_{}", pack)),
                     EnemySpriteVisual {
                         owner: entity,
                         jitter_phase: 0.0,
+                        base_y: foot_offset_y,
                     },
                     baked.animator,
                     Mesh2d(baked.mesh),
                     MeshMaterial2d(baked.material),
-                    Transform::from_xyz(0.0, foot_offset_y, 1.5),
+                    Transform::from_xyz(0.0, foot_offset_y, if is_boss { 1.8 } else { 1.5 }),
                     world_layer.clone(),
                 ));
+                if is_boss {
+                    // Dramatic fiery rim light making Vulcanus tower with molten presence!
+                    parent.spawn((
+                        Name::new("BossMoltenRimLight"),
+                        PointLight2d {
+                            color: LinearRgba::new(1.0, 0.44, 0.14, 1.0),
+                            intensity: 2.6,
+                            radius: 175.0,
+                            height: 36.0,
+                            falloff: 1.4,
+                        },
+                        Transform::from_xyz(0.0, 18.0, 4.0),
+                    ));
+                }
             });
         } else {
-            let fallback_color = if fighter.archetype == EnemyArchetype::HeavyBrawler {
-                Color::srgb(0.65, 0.22, 0.25)
-            } else {
-                Color::srgb(0.22, 0.55, 0.36)
+            let fallback_color = match fighter.archetype {
+                EnemyArchetype::HeavyBrawler => Color::srgb(0.65, 0.22, 0.25),
+                EnemyArchetype::LightStriker => Color::srgb(0.75, 0.34, 0.24),
+                EnemyArchetype::ArcaneZoner => Color::srgb(0.58, 0.20, 0.78),
+                EnemyArchetype::ShadowAssassin => Color::srgb(0.72, 0.16, 0.48),
+                EnemyArchetype::FoundryBoss => Color::linear_rgb(4.0, 1.2, 0.3),
             };
             commands.entity(entity).with_children(|parent| {
                 parent.spawn((
@@ -945,6 +1323,40 @@ fn decorate_added_enemy_fighters(
                         ..default()
                     },
                     Transform::from_xyz(0.0, 0.0, 1.5),
+                    world_layer.clone(),
+                ));
+            });
+        }
+
+        // Attach crisp miniature overhead pixel-art HP bar on regular enemies (Boss uses giant HUD bar!)
+        if !is_boss {
+            let bar_w = if fighter.archetype == EnemyArchetype::HeavyBrawler {
+                32.0
+            } else {
+                24.0
+            };
+            let bar_y = body.half_extents.y + 12.0;
+            commands.entity(entity).with_children(|parent| {
+                parent.spawn((
+                    Sprite {
+                        color: Color::srgba(0.04, 0.05, 0.08, 0.85),
+                        custom_size: Some(Vec2::new(bar_w + 2.0, 5.0)),
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, bar_y, 7.0),
+                    world_layer.clone(),
+                ));
+                parent.spawn((
+                    EnemyHealthBarFill {
+                        owner: entity,
+                        max_width: bar_w,
+                    },
+                    Sprite {
+                        color: Color::srgb(0.95, 0.26, 0.28),
+                        custom_size: Some(Vec2::new(bar_w, 3.0)),
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, bar_y, 7.1),
                     world_layer.clone(),
                 ));
             });
@@ -1005,27 +1417,139 @@ fn decorate_added_buster_projectiles(
     }
 }
 
-fn decorate_added_turret_projectiles(
+fn decorate_added_breaker_waves(
     mut commands: Commands,
-    added: Query<Entity, Added<TurretProjectile>>,
+    added: Query<(Entity, &BreakerWaveProjectile), Added<BreakerWaveProjectile>>,
 ) {
     let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
-    for entity in &added {
-        commands.entity(entity).insert((
-            Sprite {
-                color: Color::linear_rgb(4.6, 0.45, 0.65),
-                custom_size: Some(Vec2::new(9.0, 9.0)),
-                ..default()
-            },
-            PointLight2d {
-                color: LinearRgba::new(1.0, 0.2, 0.35, 1.0),
-                intensity: 1.8,
-                radius: 105.0,
-                height: 18.0,
-                falloff: 1.6,
-            },
-            world_layer.clone(),
-        ));
+    for (entity, wave) in &added {
+        let dir = wave.facing.signum();
+        commands
+            .entity(entity)
+            .insert((
+                Sprite {
+                    color: Color::linear_rgb(0.30, 3.8, 5.4),
+                    custom_size: Some(Vec2::new(12.0, 36.0)),
+                    ..default()
+                },
+                PointLight2d {
+                    color: LinearRgba::new(0.20, 0.95, 1.0, 1.0),
+                    intensity: 3.2,
+                    radius: 175.0,
+                    height: 22.0,
+                    falloff: 1.4,
+                },
+                world_layer.clone(),
+            ))
+            .with_children(|parent| {
+                // Bright white-cyan razor leading edge
+                parent.spawn((
+                    Sprite {
+                        color: Color::linear_rgb(4.4, 5.2, 5.6),
+                        custom_size: Some(Vec2::new(5.0, 28.0)),
+                        ..default()
+                    },
+                    Transform::from_xyz(dir * 3.5, 0.0, 0.2),
+                    world_layer.clone(),
+                ));
+                // Swept crescent tips (top & bottom)
+                for y_sign in [-1.0_f32, 1.0_f32] {
+                    parent.spawn((
+                        Sprite {
+                            color: Color::linear_rgb(0.35, 3.4, 5.2),
+                            custom_size: Some(Vec2::new(10.0, 6.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(-dir * 4.0, y_sign * 16.0, 0.1)
+                            .with_rotation(Quat::from_rotation_z(-dir * y_sign * 0.55)),
+                        world_layer.clone(),
+                    ));
+                }
+            });
+    }
+}
+
+fn decorate_added_turret_projectiles(
+    mut commands: Commands,
+    added: Query<(Entity, &TurretProjectile), Added<TurretProjectile>>,
+) {
+    let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
+    for (entity, proj) in &added {
+        if proj.is_magma_wave {
+            commands
+                .entity(entity)
+                .insert((
+                    Sprite {
+                        color: Color::linear_rgb(5.2, 2.0, 0.32),
+                        custom_size: Some(Vec2::new(18.0, 16.0)),
+                        ..default()
+                    },
+                    PointLight2d {
+                        color: LinearRgba::new(1.0, 0.50, 0.12, 1.0),
+                        intensity: 2.8,
+                        radius: 155.0,
+                        height: 20.0,
+                        falloff: 1.4,
+                    },
+                    world_layer.clone(),
+                ))
+                .with_children(|parent| {
+                    parent.spawn((
+                        Sprite {
+                            color: Color::linear_rgb(5.6, 4.6, 1.8),
+                            custom_size: Some(Vec2::new(9.0, 9.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(0.0, 1.0, 0.2),
+                        world_layer.clone(),
+                    ));
+                });
+        } else if proj.is_arcane {
+            commands
+                .entity(entity)
+                .insert((
+                    Sprite {
+                        color: Color::linear_rgb(3.8, 0.55, 5.2),
+                        custom_size: Some(Vec2::new(12.0, 12.0)),
+                        ..default()
+                    },
+                    PointLight2d {
+                        color: LinearRgba::new(0.82, 0.24, 1.0, 1.0),
+                        intensity: 2.4,
+                        radius: 135.0,
+                        height: 20.0,
+                        falloff: 1.5,
+                    },
+                    world_layer.clone(),
+                ))
+                .with_children(|parent| {
+                    parent.spawn((
+                        Sprite {
+                            color: Color::linear_rgb(5.0, 3.6, 5.4),
+                            custom_size: Some(Vec2::new(6.0, 6.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(0.0, 0.0, 0.2),
+                        world_layer.clone(),
+                    ));
+                });
+        } else {
+            commands.entity(entity).insert((
+                Sprite {
+                    color: Color::linear_rgb(4.6, 0.45, 0.65),
+                    custom_size: Some(Vec2::new(9.0, 9.0)),
+                    ..default()
+                },
+                PointLight2d {
+                    color: LinearRgba::new(1.0, 0.2, 0.35, 1.0),
+                    intensity: 1.8,
+                    radius: 105.0,
+                    height: 18.0,
+                    falloff: 1.6,
+                },
+                world_layer.clone(),
+            ));
+        }
     }
 }
 
@@ -1068,6 +1592,12 @@ fn drive_player_visuals_and_animations(
         (
             &KinematicBody,
             &AttackState,
+            Option<&ShieldState>,
+            Option<&CounterStance>,
+            Option<&MeteorDiveState>,
+            Option<&AirDodgeState>,
+            Option<&GroundDodgeState>,
+            Option<&SmashChargeState>,
             Option<&Hitstop>,
             Option<&Hitstun>,
             Option<&Invulnerable>,
@@ -1084,13 +1614,41 @@ fn drive_player_visuals_and_animations(
     if *state.get() == AppState::Paused {
         return;
     }
-    let Ok((body, attack, hitstop, hitstun, invuln)) = players.single() else {
+    let Ok((
+        body,
+        attack,
+        shield,
+        counter,
+        dive,
+        air_dodge,
+        ground_dodge,
+        smash_charge,
+        hitstop,
+        hitstun,
+        invuln,
+    )) = players.single()
+    else {
         return;
     };
 
     let dt = time.delta_secs();
     let in_hitstop = hitstop.is_some_and(Hitstop::is_active);
-    let blink_alpha = if invuln.is_some_and(Invulnerable::is_active) {
+    let in_air_dodge = air_dodge.is_some_and(|a| a.active_timer > 0.0);
+    let in_ground_dodge = ground_dodge.is_some_and(GroundDodgeState::is_active);
+    let smash_charge_ratio = smash_charge
+        .filter(|s| s.is_visibly_charging())
+        .map(SmashChargeState::charge_ratio);
+    let in_shield = shield.is_some_and(|s| s.active);
+    let in_counter = counter.is_some_and(CounterStance::is_active);
+    let in_dive = dive.is_some_and(|d| d.active);
+    let spin_charge = match body.state {
+        MovementState::SpinCharging { charge } => Some(charge),
+        _ => None,
+    };
+
+    let blink_alpha = if in_air_dodge || in_ground_dodge {
+        0.54
+    } else if invuln.is_some_and(Invulnerable::is_active) {
         if ((time.elapsed_secs() * 24.0) as u32).is_multiple_of(2) {
             0.35
         } else {
@@ -1101,12 +1659,53 @@ fn drive_player_visuals_and_animations(
     };
 
     for mut pivot_tf in &mut pivots {
-        pivot_tf.rotation = Quat::from_rotation_z(body.visual_angle);
+        if let Some(charge) = spin_charge {
+            let vib = ((time.elapsed_secs() * (45.0 + charge * 55.0)).sin()) * 0.14;
+            pivot_tf.rotation = Quat::from_rotation_z(body.visual_angle - body.facing * 0.28 + vib);
+            pivot_tf.scale = Vec3::new(1.0 + charge * 0.12, 0.80 - charge * 0.12, 1.0);
+        } else if let Some(ratio) = smash_charge_ratio {
+            // Iconic Smash Bros. weapon charge squash + rapid rumble vibration!
+            let vib = ((time.elapsed_secs() * (52.0 + ratio * 48.0)).sin()) * (0.04 + ratio * 0.08);
+            pivot_tf.rotation = Quat::from_rotation_z(body.visual_angle + vib);
+            pivot_tf.scale = Vec3::new(1.0 + ratio * 0.10, 0.96 - ratio * 0.08, 1.0);
+        } else {
+            pivot_tf.rotation = Quat::from_rotation_z(body.visual_angle);
+            pivot_tf.scale = Vec3::ONE;
+        }
     }
 
     for (mut animator, mat_handle) in &mut visuals {
         if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
-            mat.data.tint.w = blink_alpha;
+            if let Some(ratio) = smash_charge_ratio {
+                // Pulsing golden-amber Smash Charge aura!
+                let pulse = 0.5 + 0.5 * (time.elapsed_secs() * (24.0 + ratio * 22.0)).sin();
+                mat.data.tint = Vec4::new(
+                    1.6 + ratio * 1.4 + pulse * 0.6,
+                    1.3 + ratio * 1.0 + pulse * 0.4,
+                    0.55 + (1.0 - ratio) * 0.6,
+                    1.0,
+                );
+            } else if in_counter {
+                // Radiant Aegis gold-white counter stance aura!
+                let pulse = 0.5 + 0.5 * (time.elapsed_secs() * 32.0).sin();
+                mat.data.tint = Vec4::new(2.3 + pulse * 0.9, 1.9 + pulse * 0.6, 0.65, 1.0);
+            } else if in_dive {
+                // Blazing molten meteor-dive tint!
+                mat.data.tint = Vec4::new(2.5, 1.35, 0.45, 1.0);
+            } else if in_air_dodge || in_ground_dodge {
+                mat.data.tint = Vec4::new(0.45, 1.85, 2.8, blink_alpha);
+            } else if let Some(charge) = spin_charge {
+                let pulse = 0.5 + 0.5 * (time.elapsed_secs() * 34.0).sin();
+                mat.data.tint = Vec4::new(
+                    1.0 + charge * 1.4 * pulse,
+                    1.0 + charge * 1.1,
+                    1.2 + charge * 1.8 * (1.0 - pulse),
+                    1.0,
+                );
+            } else {
+                // Bright crisp cool-cyan P1 hero albedo tint so P1 never blends into hostile enemies!
+                mat.data.tint = Vec4::new(1.08, 1.24, 1.42, blink_alpha);
+            }
             mat.data.fx_params.y = if in_hitstop && hitstun.is_some_and(Hitstun::is_active) {
                 0.85
             } else {
@@ -1140,7 +1739,27 @@ fn drive_player_visuals_and_animations(
             continue;
         }
 
-        if let Some(move_kind) = attack.active_move {
+        if let Some(gd) = ground_dodge
+            && gd.is_active()
+        {
+            animator.play(gd.animation_name());
+        } else if let Some(sc) = smash_charge
+            && sc.is_visibly_charging()
+            && let Some(kind) = sc.kind
+        {
+            // Hold windup pose of the charging Smash attack!
+            animator.play(kind.animation_name());
+            animator.tick(dt * 0.15);
+            continue;
+        } else if in_counter || in_dive {
+            animator.play("down_special");
+        } else if let Some(move_kind) = attack.active_move {
+            let flip_override = if move_kind == AttackKind::BackAir {
+                !animator.flip_x
+            } else {
+                animator.flip_x
+            };
+            animator.flip_x = flip_override;
             let restarted = last_attack.last_move != Some(move_kind)
                 || attack.active_timer > last_attack.last_active_timer + 0.005;
             if restarted {
@@ -1154,7 +1773,9 @@ fn drive_player_visuals_and_animations(
             last_attack.last_move = None;
             last_attack.last_active_timer = 0.0;
 
-            if attack.buster_anim_timer > 0.0 {
+            if in_shield {
+                animator.play("guard");
+            } else if attack.buster_anim_timer > 0.0 {
                 animator.play("buster");
             } else {
                 match body.state {
@@ -1167,6 +1788,9 @@ fn drive_player_visuals_and_animations(
                         } else {
                             animator.play("idle");
                         }
+                    }
+                    MovementState::SpinCharging { .. } => {
+                        animator.play("sprint");
                     }
                     MovementState::Airborne | MovementState::WallSliding { .. } => {
                         if body.velocity.y > 20.0 {
@@ -1328,6 +1952,312 @@ fn update_buster_charge_aura(
     }
 }
 
+fn update_shield_bubble_visual(
+    time: Res<Time>,
+    players: Query<&ShieldState, With<Player>>,
+    mut bubbles: Query<&mut Sprite, With<ShieldBubbleVisual>>,
+) {
+    let Ok(shield) = players.single() else {
+        return;
+    };
+    let pulse = 0.88 + 0.12 * (time.elapsed_secs() * 20.0).sin();
+    for mut sprite in &mut bubbles {
+        if shield.active {
+            let ratio = shield.health_ratio();
+            let size = 24.0 + 24.0 * ratio;
+            sprite.custom_size = Some(Vec2::new(size, size * 1.12));
+            sprite.color = if ratio > 0.55 {
+                Color::linear_rgba(0.25 * pulse, 2.8 * pulse, 4.2 * pulse, 0.36)
+            } else if ratio > 0.25 {
+                Color::linear_rgba(3.6 * pulse, 2.1 * pulse, 0.3, 0.40)
+            } else {
+                Color::linear_rgba(4.4 * pulse, 0.45, 0.45, 0.46)
+            };
+        } else {
+            sprite.color = Color::linear_rgba(0.0, 0.0, 0.0, 0.0);
+        }
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn update_respawn_angel_platform_and_p1_marker(
+    time: Res<Time>,
+    players: Query<&PlayerRespawnState, With<Player>>,
+    mut markers: Query<&mut Transform, (With<PlayerP1Marker>, Without<RespawnAngelPlatformVisual>)>,
+    mut platforms: Query<
+        (&mut Transform, &mut Visibility),
+        (With<RespawnAngelPlatformVisual>, Without<PlayerP1Marker>),
+    >,
+) {
+    let bob = (time.elapsed_secs() * 5.2).sin() * 2.0;
+    for mut m_tf in &mut markers {
+        m_tf.translation.y = (36.0 + bob).round();
+    }
+
+    let Ok(respawn) = players.single() else {
+        return;
+    };
+    for (mut p_tf, mut vis) in &mut platforms {
+        if respawn.active {
+            *vis = Visibility::Visible;
+            p_tf.translation.x = respawn.platform_pos.x.round();
+            p_tf.translation.y = respawn.platform_pos.y.round();
+        } else {
+            *vis = Visibility::Hidden;
+        }
+    }
+}
+
+/// Emits directional Smash Bros. launch smoke trails behind high-speed fighters in `Hitstun`.
+#[allow(clippy::type_complexity)]
+fn spawn_knockback_smoke_trails(
+    mut commands: Commands,
+    time: Res<Time>,
+    state: Res<State<AppState>>,
+    mut timer: ResMut<SmokeTrailTimer>,
+    launched: Query<
+        (&KinematicBody, &DamagePercent),
+        (With<Hitstun>, Without<Hitstop>),
+    >,
+) {
+    if *state.get() != AppState::Playing {
+        return;
+    }
+    timer.0 -= time.delta_secs();
+    if timer.0 > 0.0 {
+        return;
+    }
+    timer.0 = 0.032;
+
+    let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
+    for (body, percent) in &launched {
+        let spd = body.velocity.length();
+        if spd < 210.0 {
+            continue;
+        }
+        let high_pct = percent.0 >= 70.0 || spd >= 340.0;
+        let back_dir = -body.velocity.normalize_or(Vec2::X);
+        let puff_color = if high_pct {
+            Color::linear_rgba(4.2, 2.2, 0.65, 0.78)
+        } else {
+            Color::srgba(0.82, 0.88, 0.96, 0.68)
+        };
+        let puff_size = if high_pct {
+            Vec2::new(8.0, 8.0)
+        } else {
+            Vec2::new(6.0, 6.0)
+        };
+        commands.spawn((
+            HitSpark {
+                velocity: back_dir * 35.0 + Vec2::new(0.0, 18.0),
+                lifetime: 0.28,
+                max_lifetime: 0.28,
+            },
+            Sprite {
+                color: puff_color,
+                custom_size: Some(puff_size),
+                ..default()
+            },
+            Transform::from_xyz(body.position.x.round(), body.position.y.round(), 5.8),
+            world_layer.clone(),
+        ));
+    }
+}
+
+/// Spawns animated pixel dust puffs, speed streaks, rev sparks, and shield/dodge bursts.
+fn spawn_movement_particles(
+    mut commands: Commands,
+    mut move_events: MessageReader<MovementEvent>,
+    mut shake: ResMut<CameraShake>,
+) {
+    let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
+
+    for ev in move_events.read() {
+        match ev.kind {
+            MovementFxKind::Jump | MovementFxKind::Land => {
+                let count = if ev.kind == MovementFxKind::Land { 6 } else { 5 };
+                for i in 0..count {
+                    let frac = (i as f32 / (count - 1).max(1) as f32) * 2.0 - 1.0;
+                    let vel = Vec2::new(frac * 92.0, 26.0 + (1.0 - frac.abs()) * 42.0);
+                    commands.spawn((
+                        HitSpark {
+                            velocity: vel,
+                            lifetime: 0.20,
+                            max_lifetime: 0.20,
+                        },
+                        Sprite {
+                            color: Color::srgba(0.75, 0.85, 0.95, 0.72),
+                            custom_size: Some(Vec2::new(4.0, 4.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(ev.pos.x + frac * 6.0, ev.pos.y + 2.0, 6.2),
+                        world_layer.clone(),
+                    ));
+                }
+            }
+            MovementFxKind::WallJump => {
+                let base_angle = ev.dir.y.atan2(ev.dir.x);
+                for i in 0..6 {
+                    let spread = ((i as f32 / 5.0) - 0.5) * 1.3;
+                    let a = base_angle + spread;
+                    commands.spawn((
+                        HitSpark {
+                            velocity: Vec2::new(a.cos(), a.sin()) * (110.0 + (i % 3) as f32 * 35.0),
+                            lifetime: 0.22,
+                            max_lifetime: 0.22,
+                        },
+                        Sprite {
+                            color: Color::linear_rgb(3.6, 1.8, 0.4),
+                            custom_size: Some(Vec2::new(4.0, 3.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(ev.pos.x, ev.pos.y, 6.4)
+                            .with_rotation(Quat::from_rotation_z(a)),
+                        world_layer.clone(),
+                    ));
+                }
+            }
+            MovementFxKind::BoostPad | MovementFxKind::SpinDashRelease => {
+                shake.add_impulse(0.26, ev.dir);
+                for i in 0..10 {
+                    let spread = ((i as f32 / 9.0) - 0.5) * 0.9;
+                    let back = (-ev.dir).y.atan2((-ev.dir).x) + spread;
+                    let color = if i % 2 == 0 {
+                        Color::linear_rgb(0.3, 3.8, 5.0)
+                    } else {
+                        Color::linear_rgb(4.6, 2.2, 0.35)
+                    };
+                    commands.spawn((
+                        HitSpark {
+                            velocity: Vec2::new(back.cos(), back.sin()) * (190.0 + (i % 3) as f32 * 55.0),
+                            lifetime: 0.24,
+                            max_lifetime: 0.24,
+                        },
+                        Sprite {
+                            color,
+                            custom_size: Some(Vec2::new(8.0, 2.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(ev.pos.x, ev.pos.y, 6.6)
+                            .with_rotation(Quat::from_rotation_z(back)),
+                        world_layer.clone(),
+                    ));
+                }
+            }
+            MovementFxKind::SpinDashRev => {
+                for i in 0..4 {
+                    let back_x = ev.dir.x.signum();
+                    let vel = Vec2::new(
+                        back_x * (120.0 + i as f32 * 32.0),
+                        35.0 + (i % 2) as f32 * 48.0,
+                    );
+                    commands.spawn((
+                        HitSpark {
+                            velocity: vel,
+                            lifetime: 0.16,
+                            max_lifetime: 0.16,
+                        },
+                        Sprite {
+                            color: if i % 2 == 0 {
+                                Color::linear_rgb(0.35, 3.6, 5.0)
+                            } else {
+                                Color::linear_rgb(4.8, 2.6, 0.4)
+                            },
+                            custom_size: Some(Vec2::new(5.0, 2.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(ev.pos.x, ev.pos.y + 3.0, 6.5),
+                        world_layer.clone(),
+                    ));
+                }
+            }
+            MovementFxKind::ShieldBlock => {
+                shake.add_impulse(0.22, ev.dir);
+                for i in 0..8 {
+                    let a = (i as f32 / 8.0) * std::f32::consts::TAU;
+                    commands.spawn((
+                        HitSpark {
+                            velocity: Vec2::new(a.cos(), a.sin()) * 160.0,
+                            lifetime: 0.18,
+                            max_lifetime: 0.18,
+                        },
+                        Sprite {
+                            color: Color::linear_rgb(0.4, 3.8, 5.2),
+                            custom_size: Some(Vec2::new(4.0, 4.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(ev.pos.x, ev.pos.y, 7.2),
+                        world_layer.clone(),
+                    ));
+                }
+            }
+            MovementFxKind::AirDodge | MovementFxKind::RollDodge | MovementFxKind::SpotDodge => {
+                for i in 0..8 {
+                    let a = (i as f32 / 8.0) * std::f32::consts::TAU;
+                    commands.spawn((
+                        HitSpark {
+                            velocity: Vec2::new(a.cos(), a.sin()) * 105.0,
+                            lifetime: 0.22,
+                            max_lifetime: 0.22,
+                        },
+                        Sprite {
+                            color: Color::linear_rgba(0.35, 3.2, 5.0, 0.85),
+                            custom_size: Some(Vec2::new(4.0, 4.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(ev.pos.x, ev.pos.y, 6.5),
+                        world_layer.clone(),
+                    ));
+                }
+            }
+            MovementFxKind::FastFall => {
+                // Iconic Smash Bros. white-cyan sparkle star flash on Fast-Fall!
+                for i in 0..6 {
+                    let a = (i as f32 / 6.0) * std::f32::consts::TAU;
+                    commands.spawn((
+                        HitSpark {
+                            velocity: Vec2::new(a.cos(), a.sin()) * 85.0,
+                            lifetime: 0.14,
+                            max_lifetime: 0.14,
+                        },
+                        Sprite {
+                            color: Color::linear_rgb(4.6, 5.0, 5.4),
+                            custom_size: Some(Vec2::new(6.0, 2.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(ev.pos.x, ev.pos.y + 8.0, 7.0)
+                            .with_rotation(Quat::from_rotation_z(a)),
+                        world_layer.clone(),
+                    ));
+                }
+            }
+            MovementFxKind::Taunt => {
+                for i in 0..8 {
+                    let a = (i as f32 / 8.0) * std::f32::consts::TAU;
+                    commands.spawn((
+                        HitSpark {
+                            velocity: Vec2::new(a.cos() * 90.0, 45.0 + a.sin().abs() * 80.0),
+                            lifetime: 0.30,
+                            max_lifetime: 0.30,
+                        },
+                        Sprite {
+                            color: if i % 2 == 0 {
+                                Color::linear_rgb(0.4, 4.2, 5.4)
+                            } else {
+                                Color::linear_rgb(5.2, 3.8, 0.6)
+                            },
+                            custom_size: Some(Vec2::new(4.0, 4.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(ev.pos.x, ev.pos.y + 10.0, 7.2),
+                        world_layer.clone(),
+                    ));
+                }
+            }
+        }
+    }
+}
+
 #[allow(clippy::type_complexity)]
 fn drive_enemy_fighter_visuals(
     time: Res<Time>,
@@ -1335,6 +2265,7 @@ fn drive_enemy_fighter_visuals(
     enemies: Query<(
         &EnemyFighter,
         &KinematicBody,
+        Option<&BossState>,
         Option<&Hitstop>,
         Option<&Hitstun>,
         Option<&Invulnerable>,
@@ -1353,14 +2284,14 @@ fn drive_enemy_fighter_visuals(
     let dt = time.delta_secs();
 
     for (mut vis, mut animator, mut tf, mat_handle) in &mut visuals {
-        let Ok((fighter, body, hitstop, hitstun, invuln)) = enemies.get(vis.owner) else {
+        let Ok((fighter, body, boss, hitstop, hitstun, invuln)) = enemies.get(vis.owner) else {
             continue;
         };
 
         let in_hitstop = hitstop.is_some_and(Hitstop::is_active);
         let in_hitstun = hitstun.is_some_and(Hitstun::is_active);
         let telegraph = fighter.is_telegraphing();
-        let base_y = 36.0 - body.half_extents.y;
+        let base_y = vis.base_y;
 
         if in_hitstop {
             vis.jitter_phase += dt * 115.0;
@@ -1372,20 +2303,39 @@ fn drive_enemy_fighter_visuals(
         }
 
         if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
+            let phase2 = boss.is_some_and(|b| b.phase >= 2);
+            let base_enemy_tint = match fighter.archetype {
+                EnemyArchetype::LightStriker => Vec4::new(1.52, 0.58, 0.46, 1.0),
+                EnemyArchetype::HeavyBrawler => Vec4::new(1.62, 0.46, 0.34, 1.0),
+                EnemyArchetype::ArcaneZoner => Vec4::new(1.42, 0.48, 1.65, 1.0),
+                EnemyArchetype::ShadowAssassin => Vec4::new(1.55, 0.35, 1.05, 1.0),
+                EnemyArchetype::FoundryBoss => {
+                    if phase2 {
+                        let rage = 0.5 + 0.5 * (time.elapsed_secs() * 16.0).sin();
+                        Vec4::new(2.1 + rage * 0.75, 1.0 + rage * 0.45, 0.32, 1.0)
+                    } else {
+                        Vec4::new(1.65, 0.74, 0.36, 1.0)
+                    }
+                }
+            };
             mat.data.fx_params.y = if in_hitstop { 1.0 } else { 0.0 };
             mat.data.tint = if telegraph {
-                // Bright pulsing amber-red attack telegraph warning!
                 let pulse = 0.6 + 0.4 * (time.elapsed_secs() * 28.0).sin();
-                Vec4::new(1.8 + pulse, 0.65, 0.35, 1.0)
+                match fighter.archetype {
+                    EnemyArchetype::ArcaneZoner => Vec4::new(2.2 + pulse, 0.65, 2.8 + pulse, 1.0),
+                    EnemyArchetype::ShadowAssassin => Vec4::new(2.5 + pulse, 0.45, 1.65, 1.0),
+                    EnemyArchetype::FoundryBoss => Vec4::new(2.9 + pulse, 1.25 + pulse * 0.4, 0.30, 1.0),
+                    _ => Vec4::new(2.2 + pulse, 0.75, 0.35, 1.0),
+                }
             } else if invuln.is_some_and(Invulnerable::is_active) {
                 let blink = if ((time.elapsed_secs() * 22.0) as u32).is_multiple_of(2) {
                     0.45
                 } else {
                     1.0
                 };
-                Vec4::new(1.0, 1.0, 1.0, blink)
+                Vec4::new(base_enemy_tint.x, base_enemy_tint.y, base_enemy_tint.z, blink)
             } else {
-                Vec4::ONE
+                base_enemy_tint
             };
         }
 
@@ -1398,13 +2348,70 @@ fn drive_enemy_fighter_visuals(
             animator.play("hitstun");
         } else {
             match fighter.state {
-                EnemyAiState::Attacking { .. } => animator.play("jab"),
-                EnemyAiState::Telegraph { .. } => animator.play("idle"),
+                EnemyAiState::Attacking { .. } => {
+                    if fighter.archetype == EnemyArchetype::FoundryBoss {
+                        match fighter.attack_variant {
+                            0 => animator.play("f_smash"),
+                            1 => animator.play("down_special"),
+                            2 => animator.play("neutral_special"),
+                            6 => animator.play("sword_spin"),
+                            _ => animator.play("side_special"),
+                        }
+                    } else {
+                        match fighter.attack_variant {
+                            1 => animator.play("down_special"),    // HeavyBrawler seismic stomp
+                            2 => animator.play("neutral_special"), // ArcaneZoner orb cast
+                            3 => animator.play("side_special"),    // ShadowAssassin dash-through
+                            4 => animator.play("jab_2"),           // Rogue Striker 2nd cross-slash
+                            5 | 8 => animator.play("dodge_back"),  // Rogue backstep / Assassin smoke backflip
+                            6 => animator.play("sword_spin"),      // HeavyBrawler 360° whirlwind axe spin
+                            7 => animator.play("up_tilt"),         // ArcaneZoner Arcane Pillar cast
+                            _ => {
+                                if fighter.archetype == EnemyArchetype::HeavyBrawler {
+                                    animator.play("f_smash");
+                                } else if fighter.archetype == EnemyArchetype::ShadowAssassin {
+                                    animator.play("jab_2");
+                                } else {
+                                    animator.play("jab");
+                                }
+                            }
+                        }
+                    }
+                }
+                EnemyAiState::Telegraph { .. } => {
+                    if fighter.archetype == EnemyArchetype::FoundryBoss {
+                        animator.play("guard");
+                    } else {
+                        animator.play("idle");
+                    }
+                }
                 EnemyAiState::Chase if body.speed() > 18.0 => animator.play("run"),
                 _ => animator.play("idle"),
             }
         }
         animator.tick(dt);
+    }
+}
+
+fn update_enemy_health_bars(
+    enemies: Query<&EnemyHealth>,
+    mut bars: Query<(&EnemyHealthBarFill, &mut Sprite, &mut Transform)>,
+) {
+    for (bar, mut sprite, mut tf) in &mut bars {
+        let Ok(hp) = enemies.get(bar.owner) else {
+            continue;
+        };
+        let ratio = hp.ratio();
+        let w = (bar.max_width * ratio).max(0.0);
+        sprite.custom_size = Some(Vec2::new(w, 3.0));
+        tf.translation.x = -0.5 * (bar.max_width - w);
+        sprite.color = if ratio > 0.55 {
+            Color::srgb(0.95, 0.30, 0.32)
+        } else if ratio > 0.25 {
+            Color::srgb(1.0, 0.68, 0.20)
+        } else {
+            Color::linear_rgb(4.2, 1.4, 0.35)
+        };
     }
 }
 
@@ -1613,6 +2620,491 @@ fn handle_blast_zone_ko_flash(
     }
 }
 
+/// Spawns signature custom pixel-art VFX for melee slash arcs, expanding neon shockwave rings,
+/// golden Aegis Counter starbursts, Meteor Dive / Brawler Ground Slams, Plasma Blitz trails,
+/// and Arcanist phase-blink warps.
+fn handle_combat_visual_events(
+    mut commands: Commands,
+    mut vis_events: MessageReader<CombatVisualEvent>,
+    mut shake: ResMut<CameraShake>,
+) {
+    let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
+
+    let spawn_ring = |commands: &mut Commands, center: Vec2, max_radius: f32, rgb: [f32; 3]| {
+        const SIDES: usize = 8;
+        let color = Color::linear_rgb(rgb[0], rgb[1], rgb[2]);
+        for i in 0..SIDES {
+            let angle = (i as f32 / SIDES as f32) * std::f32::consts::TAU;
+            let start_r = max_radius * 0.22;
+            let seg_len = (start_r * 0.85).max(4.0);
+            let p = center + Vec2::new(angle.cos(), angle.sin()) * start_r;
+            commands.spawn((
+                ShockwaveRingSeg {
+                    center,
+                    angle,
+                    max_radius,
+                    lifetime: 0.22,
+                    max_lifetime: 0.22,
+                },
+                Sprite {
+                    color,
+                    custom_size: Some(Vec2::new(seg_len, 3.0)),
+                    ..default()
+                },
+                Transform::from_xyz(p.x, p.y, 7.6)
+                    .with_rotation(Quat::from_rotation_z(angle + std::f32::consts::FRAC_PI_2)),
+                world_layer.clone(),
+            ));
+        }
+    };
+
+    for ev in vis_events.read() {
+        match *ev {
+            CombatVisualEvent::SlashArc {
+                pos,
+                facing,
+                angle_rad,
+                radius,
+                heavy,
+                color_rgb,
+            } => {
+                // Curved 5-segment glowing crescent blade sweep!
+                let base_dir_angle = if facing < 0.0 {
+                    std::f32::consts::PI - angle_rad
+                } else {
+                    angle_rad
+                };
+                let lifetime = if heavy { 0.17 } else { 0.12 };
+                let thickness = if heavy { 5.5 } else { 3.5 };
+                let outer_color = Color::linear_rgb(color_rgb[0], color_rgb[1], color_rgb[2]);
+                let core_color = Color::linear_rgb(
+                    (color_rgb[0] + 2.2).min(5.6),
+                    (color_rgb[1] + 2.2).min(5.6),
+                    (color_rgb[2] + 2.2).min(5.6),
+                );
+                let arc_r = radius * 0.68;
+
+                for i in 0..5 {
+                    let frac = (i as f32 / 4.0) * 2.0 - 1.0; // -1.0 .. +1.0
+                    let seg_angle = base_dir_angle + frac * 1.05;
+                    let radial = Vec2::new(seg_angle.cos(), seg_angle.sin());
+                    let seg_pos = pos + radial * (arc_r * 0.55);
+                    let seg_len = (radius * (0.48 - frac.abs() * 0.16)).max(6.0);
+                    let tangent_rot = seg_angle + std::f32::consts::FRAC_PI_2;
+                    let color = if i == 2 { core_color } else { outer_color };
+
+                    commands.spawn((
+                        SlashArcSeg {
+                            velocity: radial * (if heavy { 105.0 } else { 72.0 }),
+                            lifetime,
+                            max_lifetime: lifetime,
+                            base_len: seg_len,
+                        },
+                        Sprite {
+                            color,
+                            custom_size: Some(Vec2::new(seg_len, thickness)),
+                            ..default()
+                        },
+                        Transform::from_xyz(seg_pos.x, seg_pos.y, 7.4)
+                            .with_rotation(Quat::from_rotation_z(tangent_rot)),
+                        world_layer.clone(),
+                    ));
+                }
+            }
+            CombatVisualEvent::ShockwaveRing {
+                pos,
+                max_radius,
+                color_rgb,
+            } => {
+                spawn_ring(&mut commands, pos, max_radius, color_rgb);
+            }
+            CombatVisualEvent::CounterTrigger { pos } => {
+                // Iconic Smash Bros. golden Aegis Counter starburst!
+                shake.add_impulse(0.75, Vec2::Y);
+                spawn_ring(&mut commands, pos, 74.0, [5.2, 4.2, 0.9]);
+                for i in 0..12 {
+                    let a = (i as f32 / 12.0) * std::f32::consts::TAU;
+                    let spd = if i % 2 == 0 { 280.0 } else { 185.0 };
+                    commands.spawn((
+                        HitSpark {
+                            velocity: Vec2::new(a.cos(), a.sin()) * spd,
+                            lifetime: 0.28,
+                            max_lifetime: 0.28,
+                        },
+                        Sprite {
+                            color: if i % 2 == 0 {
+                                Color::linear_rgb(5.4, 4.5, 1.2)
+                            } else {
+                                Color::linear_rgb(0.5, 4.2, 5.4)
+                            },
+                            custom_size: Some(Vec2::new(14.0, 3.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(pos.x, pos.y, 8.2)
+                            .with_rotation(Quat::from_rotation_z(a)),
+                        world_layer.clone(),
+                    ));
+                }
+            }
+            CombatVisualEvent::GroundSlam { pos } => {
+                // Heavy dual-sided seismic impact plumes + debris sparks!
+                shake.add_impulse(0.72, -Vec2::Y);
+                for side in [-1.0_f32, 1.0_f32] {
+                    for i in 0..6 {
+                        let lift = 0.25 + (i as f32 / 5.0) * 1.05;
+                        let vx = side * (120.0 + i as f32 * 36.0);
+                        let vy = 70.0 + lift * 140.0;
+                        commands.spawn((
+                            HitSpark {
+                                velocity: Vec2::new(vx, vy),
+                                lifetime: 0.30,
+                                max_lifetime: 0.30,
+                            },
+                            Sprite {
+                                color: if i % 2 == 0 {
+                                    Color::linear_rgb(5.0, 2.3, 0.40)
+                                } else {
+                                    Color::linear_rgb(0.45, 3.8, 5.2)
+                                },
+                                custom_size: Some(Vec2::new(7.0, 4.0)),
+                                ..default()
+                            },
+                            Transform::from_xyz(pos.x + side * 8.0, pos.y, 7.8)
+                                .with_rotation(Quat::from_rotation_z(vy.atan2(vx))),
+                            world_layer.clone(),
+                        ));
+                    }
+                }
+            }
+            CombatVisualEvent::SideBlitz { pos, facing } => {
+                // Electric horizontal Plasma Blitz lightning streaks!
+                shake.add_impulse(0.32, Vec2::new(facing, 0.0));
+                for i in 0..8 {
+                    let y_off = ((i as f32 / 7.0) - 0.5) * 26.0;
+                    commands.spawn((
+                        HitSpark {
+                            velocity: Vec2::new(-facing * (150.0 + (i % 3) as f32 * 55.0), y_off * 1.4),
+                            lifetime: 0.20,
+                            max_lifetime: 0.20,
+                        },
+                        Sprite {
+                            color: if i % 2 == 0 {
+                                Color::linear_rgb(0.35, 4.2, 5.4)
+                            } else {
+                                Color::linear_rgb(4.8, 4.2, 1.2)
+                            },
+                            custom_size: Some(Vec2::new(14.0, 2.5)),
+                            ..default()
+                        },
+                        Transform::from_xyz(pos.x, pos.y + y_off, 7.5),
+                        world_layer.clone(),
+                    ));
+                }
+            }
+            CombatVisualEvent::EnemyBlink { from, to } => {
+                // Arcane phase-warp departure & arrival bursts!
+                spawn_ring(&mut commands, from, 28.0, [3.8, 0.55, 5.4]);
+                spawn_ring(&mut commands, to, 34.0, [4.6, 1.2, 5.6]);
+                for anchor in [from, to] {
+                    for i in 0..6 {
+                        let a = (i as f32 / 6.0) * std::f32::consts::TAU;
+                        commands.spawn((
+                            HitSpark {
+                                velocity: Vec2::new(a.cos(), a.sin()) * 115.0,
+                                lifetime: 0.22,
+                                max_lifetime: 0.22,
+                            },
+                            Sprite {
+                                color: Color::linear_rgb(4.2, 0.85, 5.4),
+                                custom_size: Some(Vec2::new(5.0, 3.0)),
+                                ..default()
+                            },
+                            Transform::from_xyz(anchor.x, anchor.y, 7.7)
+                                .with_rotation(Quat::from_rotation_z(a)),
+                            world_layer.clone(),
+                        ));
+                    }
+                }
+            }
+            CombatVisualEvent::BossLaserTelegraph {
+                origin,
+                target_dir,
+                duration,
+            } => {
+                // 0.48s amber-gold aiming sightlines + axe charge orb before Phase 2 lasers fire!
+                let base_angle = target_dir.y.atan2(target_dir.x);
+                let beam_len = 290.0;
+                for spread in [-0.30_f32, 0.0, 0.30] {
+                    let a = base_angle + spread;
+                    let dir = Vec2::new(a.cos(), a.sin());
+                    let mid = origin + dir * (beam_len * 0.5);
+                    commands.spawn((
+                        BossSightlineFx {
+                            lifetime: duration,
+                            max_lifetime: duration,
+                            length: beam_len,
+                        },
+                        Sprite {
+                            color: Color::linear_rgba(5.4, 3.4, 0.55, 0.85),
+                            custom_size: Some(Vec2::new(beam_len, 2.5)),
+                            ..default()
+                        },
+                        Transform::from_xyz(mid.x, mid.y, 7.9)
+                            .with_rotation(Quat::from_rotation_z(a)),
+                        world_layer.clone(),
+                    ));
+                }
+                // Glowing charge orb flashing on Vulcanus's weapon
+                commands.spawn((
+                    BossSightlineFx {
+                        lifetime: duration,
+                        max_lifetime: duration,
+                        length: 22.0,
+                    },
+                    Sprite {
+                        color: Color::linear_rgba(5.6, 4.4, 1.2, 0.95),
+                        custom_size: Some(Vec2::new(22.0, 22.0)),
+                        ..default()
+                    },
+                    Transform::from_xyz(origin.x, origin.y, 8.1),
+                    world_layer.clone(),
+                ));
+            }
+            CombatVisualEvent::CycloneSpin {
+                pos,
+                radius,
+                color_rgb,
+            } => {
+                // Iconic 360° Hurricane Sword Spin / Whirlwind Axe multi-ring tornado VFX!
+                shake.add_impulse(0.32, Vec2::Y);
+                spawn_ring(&mut commands, pos, radius, color_rgb);
+                spawn_ring(
+                    &mut commands,
+                    pos + Vec2::new(0.0, 8.0),
+                    radius * 0.72,
+                    [
+                        (color_rgb[0] + 1.8).min(5.6),
+                        (color_rgb[1] + 1.8).min(5.6),
+                        (color_rgb[2] + 1.8).min(5.6),
+                    ],
+                );
+                let col = Color::linear_rgb(color_rgb[0], color_rgb[1], color_rgb[2]);
+                let core = Color::linear_rgb(5.4, 4.8, 2.0);
+                for i in 0..10 {
+                    let a = (i as f32 / 10.0) * std::f32::consts::TAU;
+                    let radial = Vec2::new(a.cos(), a.sin());
+                    let tangent = Vec2::new(-a.sin(), a.cos());
+                    let sp_pos = pos + radial * (radius * 0.55);
+                    let vel = tangent * 150.0 + radial * 70.0 + Vec2::new(0.0, 35.0);
+                    commands.spawn((
+                        SlashArcSeg {
+                            velocity: vel,
+                            lifetime: 0.22,
+                            max_lifetime: 0.22,
+                            base_len: (radius * 0.45).max(10.0),
+                        },
+                        Sprite {
+                            color: if i % 2 == 0 { col } else { core },
+                            custom_size: Some(Vec2::new((radius * 0.45).max(10.0), 4.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(sp_pos.x, sp_pos.y, 7.8)
+                            .with_rotation(Quat::from_rotation_z(a + std::f32::consts::FRAC_PI_2)),
+                        world_layer.clone(),
+                    ));
+                }
+            }
+            CombatVisualEvent::SmashChargeRelease {
+                pos,
+                facing,
+                charge_ratio,
+            } => {
+                // Golden-white charged Smash detonation burst!
+                shake.add_impulse(0.35 + charge_ratio * 0.45, Vec2::new(facing, 0.25));
+                spawn_ring(&mut commands, pos, 36.0 + charge_ratio * 28.0, [5.4, 3.8, 0.7]);
+                for i in 0..10 {
+                    let a = (i as f32 / 10.0) * std::f32::consts::TAU;
+                    commands.spawn((
+                        HitSpark {
+                            velocity: Vec2::new(a.cos(), a.sin()) * (160.0 + charge_ratio * 140.0),
+                            lifetime: 0.24,
+                            max_lifetime: 0.24,
+                        },
+                        Sprite {
+                            color: if i % 2 == 0 {
+                                Color::linear_rgb(5.5, 4.4, 1.0)
+                            } else {
+                                Color::linear_rgb(0.5, 4.4, 5.5)
+                            },
+                            custom_size: Some(Vec2::new(10.0, 3.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(pos.x, pos.y, 8.2)
+                            .with_rotation(Quat::from_rotation_z(a)),
+                        world_layer.clone(),
+                    ));
+                }
+            }
+            CombatVisualEvent::ArcanePillarTelegraph { pos, duration } => {
+                // Pulsing violet ground rune warning right under player before eruption!
+                spawn_ring(&mut commands, pos + Vec2::new(0.0, 4.0), 34.0, [4.2, 0.65, 5.4]);
+                commands.spawn((
+                    BossSightlineFx {
+                        lifetime: duration,
+                        max_lifetime: duration,
+                        length: 36.0,
+                    },
+                    Sprite {
+                        color: Color::linear_rgba(4.4, 0.75, 5.6, 0.90),
+                        custom_size: Some(Vec2::new(42.0, 6.0)),
+                        ..default()
+                    },
+                    Transform::from_xyz(pos.x, pos.y + 3.0, 7.8),
+                    world_layer.clone(),
+                ));
+                commands.spawn((
+                    BossSightlineFx {
+                        lifetime: duration,
+                        max_lifetime: duration,
+                        length: 120.0,
+                    },
+                    Sprite {
+                        color: Color::linear_rgba(3.8, 0.55, 5.2, 0.45),
+                        custom_size: Some(Vec2::new(120.0, 2.5)),
+                        ..default()
+                    },
+                    Transform::from_xyz(pos.x, pos.y + 60.0, 7.7)
+                        .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+                    world_layer.clone(),
+                ));
+            }
+            CombatVisualEvent::ArcanePillarErupt { pos } => {
+                // Tall blazing violet arcane column erupting skyward!
+                shake.add_impulse(0.45, Vec2::Y);
+                commands.spawn((
+                    SmashKoFlashBeam {
+                        lifetime: 0.28,
+                        max_lifetime: 0.28,
+                    },
+                    Sprite {
+                        color: Color::linear_rgba(4.4, 0.75, 5.6, 0.85),
+                        custom_size: Some(Vec2::new(128.0, 34.0)),
+                        ..default()
+                    },
+                    Transform::from_xyz(pos.x, pos.y + 62.0, 8.3)
+                        .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+                    world_layer.clone(),
+                ));
+                commands.spawn((
+                    SmashKoFlashBeam {
+                        lifetime: 0.22,
+                        max_lifetime: 0.22,
+                    },
+                    Sprite {
+                        color: Color::linear_rgb(5.4, 3.8, 5.6),
+                        custom_size: Some(Vec2::new(122.0, 12.0)),
+                        ..default()
+                    },
+                    Transform::from_xyz(pos.x, pos.y + 62.0, 8.5)
+                        .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+                    world_layer.clone(),
+                ));
+                for i in 0..10 {
+                    let spread_x = ((i as f32 / 9.0) - 0.5) * 80.0;
+                    commands.spawn((
+                        HitSpark {
+                            velocity: Vec2::new(spread_x, 190.0 + (i % 3) as f32 * 70.0),
+                            lifetime: 0.28,
+                            max_lifetime: 0.28,
+                        },
+                        Sprite {
+                            color: Color::linear_rgb(4.6, 1.2, 5.6),
+                            custom_size: Some(Vec2::new(5.0, 5.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(pos.x + spread_x * 0.2, pos.y + 12.0, 8.6),
+                        world_layer.clone(),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn update_slash_and_shockwave_fx(
+    mut commands: Commands,
+    time: Res<Time>,
+    state: Res<State<AppState>>,
+    mut slashes: Query<
+        (Entity, &mut SlashArcSeg, &mut Transform, &mut Sprite),
+        (Without<ShockwaveRingSeg>, Without<BossSightlineFx>),
+    >,
+    mut rings: Query<
+        (Entity, &mut ShockwaveRingSeg, &mut Transform, &mut Sprite),
+        (Without<SlashArcSeg>, Without<BossSightlineFx>),
+    >,
+    mut sightlines: Query<
+        (Entity, &mut BossSightlineFx, &mut Sprite),
+        (Without<SlashArcSeg>, Without<ShockwaveRingSeg>),
+    >,
+) {
+    if *state.get() == AppState::Paused {
+        return;
+    }
+    let dt = time.delta_secs();
+
+    for (entity, mut seg, mut tf, mut sprite) in &mut slashes {
+        seg.lifetime -= dt;
+        if seg.lifetime <= 0.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let frac = (seg.lifetime / seg.max_lifetime).clamp(0.0, 1.0);
+        tf.translation.x += seg.velocity.x * dt;
+        tf.translation.y += seg.velocity.y * dt;
+        let len_scale = 0.75 + (1.0 - frac) * 0.55;
+        sprite.custom_size = Some(Vec2::new(seg.base_len * len_scale, (4.5 * frac).max(1.5)));
+        sprite.color.set_alpha(frac);
+    }
+
+    for (entity, mut ring, mut tf, mut sprite) in &mut rings {
+        ring.lifetime -= dt;
+        if ring.lifetime <= 0.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let frac = (ring.lifetime / ring.max_lifetime).clamp(0.0, 1.0);
+        let progress = 1.0 - frac;
+        let radius = ring.max_radius * (0.22 + progress * 0.78);
+        let p = ring.center + Vec2::new(ring.angle.cos(), ring.angle.sin()) * radius;
+        tf.translation.x = p.x;
+        tf.translation.y = p.y;
+        sprite.custom_size = Some(Vec2::new((radius * 0.85).max(4.0), (3.5 * frac).max(1.2)));
+        sprite.color.set_alpha(frac);
+    }
+
+    let blink = 0.55 + 0.45 * (time.elapsed_secs() * 44.0).sin();
+    for (entity, mut beam, mut sprite) in &mut sightlines {
+        beam.lifetime -= dt;
+        if beam.lifetime <= 0.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let progress = 1.0 - (beam.lifetime / beam.max_lifetime).clamp(0.0, 1.0);
+        if beam.length > 40.0 {
+            // Aiming beam tightens & intensifies right before firing!
+            let thick = (4.0 - progress * 2.2).max(1.4);
+            sprite.custom_size = Some(Vec2::new(beam.length, thick));
+            sprite.color = Color::linear_rgba(5.6, 3.0 + progress * 2.0, 0.55 + progress * 1.4, blink);
+        } else {
+            let sz = 12.0 + progress * 16.0;
+            sprite.custom_size = Some(Vec2::new(sz, sz));
+            sprite.color.set_alpha(0.5 + 0.5 * blink);
+        }
+    }
+}
+
 fn update_hit_sparks_and_ko_beams(
     mut commands: Commands,
     time: Res<Time>,
@@ -1650,17 +3142,17 @@ fn update_hit_sparks_and_ko_beams(
     }
 }
 
-/// Smooth look-ahead camera that leads high-speed Sonic runs in Zones A/B and frames
-/// the Smash Battlefield arena cleanly in Zone C, strictly integer-snapped to virtual pixels.
+/// Smooth look-ahead camera that tracks progression across all 5 Acts and smoothly locks onto
+/// active Lockdown Ambush Arenas and the End-of-Level Boss Chamber.
 #[allow(clippy::too_many_arguments)]
 fn update_follow_camera(
     time: Res<Time>,
     state: Res<State<AppState>>,
     spawn_point: Res<PlayerSpawnPoint>,
+    enc_status: Res<EncounterStatus>,
     mut restarts: MessageReader<StageRestartEvent>,
     mut shake: ResMut<CameraShake>,
     players: Query<&KinematicBody, With<Player>>,
-    blast_zones: Query<&BlastZone>,
     mut cameras: Query<(&mut PixelWorldCamera, &mut Transform)>,
 ) {
     if restarts.read().next().is_some() {
@@ -1693,17 +3185,11 @@ fn update_follow_camera(
         Vec2::ZERO
     };
 
-    let arena_frame = blast_zones
-        .iter()
-        .next()
-        .filter(|z| body.position.x >= z.min.x + 10.0 && body.position.y >= z.min.y)
-        .map(|z| z.arena_center);
-
     for (mut cam, mut transform) in &mut cameras {
-        let target = if let Some(arena_center) = arena_frame {
-            // Blend smoothly toward the Zone C Smash Arena center while still following player action
-            let player_bias = body.position + Vec2::new(0.0, 26.0);
-            arena_center.lerp(player_bias, 0.32)
+        let target = if let Some(arena_center) = enc_status.camera_lock_center {
+            // Frame the locked Ambush Arena / Boss Sanctum tightly so both gates and foes stay visible!
+            let player_bias = body.position + Vec2::new(0.0, 22.0);
+            arena_center.lerp(player_bias, 0.22)
         } else {
             let target_ahead = Vec2::new(
                 (body.velocity.x * 0.22).clamp(-96.0, 118.0),
@@ -1719,6 +3205,27 @@ fn update_follow_camera(
 
         transform.translation.x = (cam.smooth_pos.x + shake_offset.x).round();
         transform.translation.y = (cam.smooth_pos.y + shake_offset.y).round();
+    }
+}
+
+/// Scrolls multi-layer pixel-art Foundry parallax tiles seamlessly around `PixelWorldCamera`.
+fn update_parallax_backdrop(
+    cameras: Query<&Transform, (With<PixelWorldCamera>, Without<ParallaxLayer>)>,
+    mut layers: Query<(&ParallaxLayer, &mut Transform)>,
+) {
+    let Ok(cam_tf) = cameras.single() else {
+        return;
+    };
+    let cam_x = cam_tf.translation.x;
+    let cam_y = cam_tf.translation.y;
+
+    for (layer, mut tf) in &mut layers {
+        let scroll_x = (cam_x * layer.factor_x).rem_euclid(layer.tile_width);
+        let tile_x = cam_x - scroll_x + (layer.tile_index as f32) * layer.tile_width;
+        let tile_y = cam_y - (cam_y * layer.factor_y).clamp(-48.0, 48.0);
+        tf.translation.x = tile_x.round();
+        tf.translation.y = tile_y.round();
+        tf.translation.z = layer.z;
     }
 }
 

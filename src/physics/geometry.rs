@@ -199,6 +199,168 @@ impl SpikeHazard {
     }
 }
 
+/// Pneumatic Foundry Spring Launcher that catapults fighters high into upper routes or aerial combos!
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct JumpPad {
+    pub center: Vec2,
+    pub half_extents: Vec2,
+    pub launch_vy: f32,
+}
+
+impl JumpPad {
+    pub fn new(center: Vec2, size: Vec2, launch_vy: f32) -> Self {
+        Self {
+            center,
+            half_extents: size * 0.5,
+            launch_vy: launch_vy.max(460.0),
+        }
+    }
+
+    pub fn overlaps(&self, body_center: Vec2, body_half: Vec2) -> bool {
+        let dx = (body_center.x - self.center.x).abs();
+        let dy = (body_center.y - self.center.y).abs();
+        dx <= self.half_extents.x + body_half.x && dy <= self.half_extents.y + body_half.y
+    }
+}
+
+/// Interactive glowing Foundry Checkpoint Pylon (ignites cyan on touch, saves respawn, heals -25%).
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct CheckpointBeacon {
+    pub id: u32,
+    pub pos: Vec2,
+    pub activated: bool,
+}
+
+impl CheckpointBeacon {
+    pub fn new(id: u32, pos: Vec2) -> Self {
+        Self {
+            id,
+            pos,
+            activated: false,
+        }
+    }
+}
+
+/// Kind of stage collectible pickup scattered along sightlines, combat lanes, and secret vaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CollectibleKind {
+    /// Floating Foundry Energy Core (jump sightline breadcrumb, -5% Smash heal + score).
+    EnergyCore,
+    /// Hidden Golden Data Relic (3 hidden per stage — unlocks S-Rank!).
+    SecretRelic,
+    /// Emerald Nano-Repair Canister (-40% Smash damage heal!).
+    HealCanister,
+}
+
+/// Collectible world pickup entity.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct CollectibleItem {
+    pub kind: CollectibleKind,
+    pub pos: Vec2,
+    pub bob_phase: f32,
+}
+
+impl CollectibleItem {
+    pub fn new(kind: CollectibleKind, pos: Vec2) -> Self {
+        Self {
+            kind,
+            pos,
+            bob_phase: (pos.x * 0.03 + pos.y * 0.02).rem_euclid(std::f32::consts::TAU),
+        }
+    }
+
+    pub fn pickup_radius(&self) -> f32 {
+        match self.kind {
+            CollectibleKind::EnergyCore => 16.0,
+            CollectibleKind::SecretRelic => 20.0,
+            CollectibleKind::HealCanister => 18.0,
+        }
+    }
+}
+
+/// Cracked destructible Foundry bulkhead blocking secret vaults & speedrun shortcuts (`SolidRect` + `Hurtbox`).
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct BreakableWall {
+    pub hp: f32,
+    pub max_hp: f32,
+    pub center: Vec2,
+    pub size: Vec2,
+}
+
+impl BreakableWall {
+    pub fn new(center: Vec2, size: Vec2, max_hp: f32) -> Self {
+        Self {
+            hp: max_hp.max(10.0),
+            max_hp: max_hp.max(10.0),
+            center,
+            size,
+        }
+    }
+
+    pub fn hp_ratio(&self) -> f32 {
+        (self.hp / self.max_hp.max(1.0)).clamp(0.0, 1.0)
+    }
+}
+
+/// Lifecycle phase of a rhythmic [`TimedHazardBeam`] magma/plasma vent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HazardBeamPhase {
+    Off,
+    Telegraph,
+    Active,
+}
+
+/// Rhythmic Mega Man X magma/laser Foundry vent cycling cleanly: `Off -> Telegraph -> Active`.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct TimedHazardBeam {
+    pub center: Vec2,
+    pub half_extents: Vec2,
+    pub off_secs: f32,
+    pub telegraph_secs: f32,
+    pub active_secs: f32,
+    pub timer: f32,
+    pub damage: f32,
+}
+
+impl TimedHazardBeam {
+    pub fn new(center: Vec2, size: Vec2, phase_offset: f32) -> Self {
+        let off_secs = 1.65;
+        let telegraph_secs = 0.60;
+        let active_secs = 1.15;
+        let total = off_secs + telegraph_secs + active_secs;
+        Self {
+            center,
+            half_extents: size * 0.5,
+            off_secs,
+            telegraph_secs,
+            active_secs,
+            timer: phase_offset.rem_euclid(total),
+            damage: 11.0,
+        }
+    }
+
+    pub fn cycle_secs(&self) -> f32 {
+        self.off_secs + self.telegraph_secs + self.active_secs
+    }
+
+    pub fn phase(&self) -> HazardBeamPhase {
+        let t = self.timer.rem_euclid(self.cycle_secs());
+        if t < self.off_secs {
+            HazardBeamPhase::Off
+        } else if t < self.off_secs + self.telegraph_secs {
+            HazardBeamPhase::Telegraph
+        } else {
+            HazardBeamPhase::Active
+        }
+    }
+
+    pub fn overlaps(&self, body_center: Vec2, body_half: Vec2) -> bool {
+        let dx = (body_center.x - self.center.x).abs();
+        let dy = (body_center.y - self.center.y).abs();
+        dx <= self.half_extents.x + body_half.x * 0.8 && dy <= self.half_extents.y + body_half.y * 0.85
+    }
+}
+
 /// Result of a dual foot downward ground-sensor cast.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GroundHit {

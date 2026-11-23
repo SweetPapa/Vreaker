@@ -2505,7 +2505,7 @@ fn tick_hitstop_and_status_timers(
 fn advance_buster_projectiles(
     mut commands: Commands,
     fixed_time: Res<Time<Fixed>>,
-    solids: Query<&SolidRect>,
+    solids: Query<&SolidRect, Without<crate::physics::BreakableWall>>,
     mut projectiles: Query<(Entity, &BusterProjectile, &Hitbox, &mut Transform)>,
 ) {
     let dt = fixed_time.delta_secs();

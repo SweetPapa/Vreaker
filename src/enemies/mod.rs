@@ -14,7 +14,11 @@ use crate::combat::{
     CombatVisualEvent, DamagePercent, DualSidedHitbox, Hitbox, Hitstop, Hitstun, Hurtbox,
     Invulnerable, KnockbackWeight, Team,
 };
-use crate::physics::{KinematicBody, MovementState, SolidRect, SpikeHazard};
+use crate::physics::{
+    BreakableWall, CheckpointBeacon, CollectibleItem, CollectibleKind, HazardBeamPhase,
+    KinematicBody, MovementEvent, MovementFxKind, MovementState, SolidRect, SpikeHazard,
+    TimedHazardBeam,
+};
 use crate::player::{DEFAULT_PLAYER_SPAWN, Player};
 use crate::state::{AppState, GameStateCommand, StageRestartEvent};
 
@@ -392,12 +396,78 @@ impl BlastZoneKoEvent {
     }
 }
 
-/// Tracks live stage KO score & turret takedowns.
+/// Tracks live stage KO score, turret takedowns, and collectible progress (for S/A/B/C Ranking!).
 #[derive(Resource, Debug, Clone, Copy, Default)]
 pub struct ArenaScore {
     pub ko_count: u32,
     pub turrets_destroyed: u32,
     pub encounters_cleared: u32,
+    pub cores_collected: u32,
+    pub cores_total: u32,
+    pub relics_collected: u32,
+    pub relics_total: u32,
+    pub walls_broken: u32,
+}
+
+impl ArenaScore {
+    /// Computes classic Mega Man X / Sonic stage clear grade (`S`, `A`, `B`, or `C`).
+    pub fn compute_stage_rank(&self, clear_secs: f32, best_combo: u32) -> &'static str {
+        let mut pts: u32 = 0;
+        if clear_secs <= 185.0 {
+            pts += 3;
+        } else if clear_secs <= 260.0 {
+            pts += 2;
+        } else {
+            pts += 1;
+        }
+        pts += self.relics_collected.min(3) * 2;
+        if self.cores_total > 0 && self.cores_collected * 2 >= self.cores_total {
+            pts += 2;
+        } else if self.cores_collected >= 5 {
+            pts += 1;
+        }
+        if best_combo >= 5 {
+            pts += 2;
+        } else if best_combo >= 3 {
+            pts += 1;
+        }
+        if pts >= 10 {
+            "S"
+        } else if pts >= 7 {
+            "A"
+        } else if pts >= 4 {
+            "B"
+        } else {
+            "C"
+        }
+    }
+}
+
+/// Helper spawning a destructible cracked Foundry [`BreakableWall`] blocking secret vaults & shortcuts.
+pub fn spawn_breakable_wall(commands: &mut Commands, center: Vec2, size: Vec2, hp: f32) -> Entity {
+    commands
+        .spawn((
+            Name::new("BreakableWall"),
+            BreakableWall::new(center, size, hp),
+            SolidRect::new(center, size),
+            Team::Enemy,
+            Hurtbox {
+                offset: Vec2::ZERO,
+                radius: (size.x.max(size.y) * 0.50).clamp(18.0, 44.0),
+            },
+            DamagePercent(0.0),
+            KnockbackWeight(0.0),
+            KinematicBody {
+                position: center,
+                half_extents: size * 0.5,
+                state: MovementState::Grounded,
+                facing: -1.0,
+                ..default()
+            },
+            Transform::from_xyz(center.x, center.y, -2.0),
+            Visibility::default(),
+        ))
+        .id()
 }
 
 /// Spawns a complete headless-safe [`EnemyFighter`] (respawns after 3s on KO by default).
@@ -532,6 +602,8 @@ impl Plugin for EnemiesPlugin {
                 FixedUpdate,
                 (
                     update_player_checkpoint,
+                    update_checkpoint_beacons,
+                    update_collectible_items,
                     update_lockdown_encounters,
                     update_enemy_fighter_ai,
                     update_boss_ai,
@@ -546,6 +618,8 @@ impl Plugin for EnemiesPlugin {
                 FixedUpdate,
                 (
                     resolve_spike_hazards,
+                    update_timed_hazard_beams,
+                    update_breakable_walls,
                     apply_enemy_hp_damage_and_kos,
                     check_blast_zone_kos,
                     tick_pending_enemy_respawns,
@@ -563,7 +637,13 @@ fn reset_encounter_state_on_title(
     mut enc_status: ResMut<EncounterStatus>,
     mut checkpoint: ResMut<PlayerCheckpoint>,
 ) {
-    *score = ArenaScore::default();
+    let cores_total = score.cores_total;
+    let relics_total = score.relics_total;
+    *score = ArenaScore {
+        cores_total,
+        relics_total,
+        ..default()
+    };
     *enc_status = EncounterStatus::default();
     *checkpoint = PlayerCheckpoint::default();
 }
@@ -575,13 +655,20 @@ fn reset_arena_score_on_restart(
     mut checkpoint: ResMut<PlayerCheckpoint>,
 ) {
     if restarts.read().next().is_some() {
-        *score = ArenaScore::default();
+        let cores_total = score.cores_total;
+        let relics_total = score.relics_total;
+        *score = ArenaScore {
+            cores_total,
+            relics_total,
+            ..default()
+        };
         *enc_status = EncounterStatus::default();
         *checkpoint = PlayerCheckpoint::default();
     }
 }
 
-/// Advances the player's safe Angel Respawn checkpoint as they progress deeper into the stage.
+/// Advances fallback progression checkpoints on grounded landings across all 8 Sectors
+/// (complemented by explicit glowing [`CheckpointBeacon`] pylons!).
 fn update_player_checkpoint(
     players: Query<&KinematicBody, With<Player>>,
     mut checkpoint: ResMut<PlayerCheckpoint>,
@@ -592,19 +679,249 @@ fn update_player_checkpoint(
     if body.state != MovementState::Grounded {
         return;
     }
-    // Advance safe respawn checkpoints at major stage landings across all 5 Acts
     for (threshold_x, cp_pos) in [
-        (300.0, Vec2::new(340.0, 56.0)),
-        (650.0, Vec2::new(710.0, 248.0)),
-        (1470.0, Vec2::new(1520.0, 248.0)),
-        (1860.0, Vec2::new(1900.0, 248.0)),
-        (2590.0, Vec2::new(2635.0, 248.0)),
-        (2960.0, Vec2::new(3005.0, 368.0)),
-        (3930.0, Vec2::new(3980.0, 248.0)),
-        (4310.0, Vec2::new(4365.0, 248.0)),
+        (335.0, Vec2::new(380.0, 56.0)),
+        (680.0, Vec2::new(720.0, 248.0)),
+        (1780.0, Vec2::new(1810.0, 248.0)),
+        (3490.0, Vec2::new(3530.0, 248.0)),
+        (4860.0, Vec2::new(4940.0, 368.0)),
+        (6630.0, Vec2::new(6680.0, 248.0)),
+        (7480.0, Vec2::new(7540.0, 248.0)),
+        (8300.0, Vec2::new(8360.0, 248.0)),
     ] {
         if body.position.x >= threshold_x && checkpoint.0.x < cp_pos.x {
             checkpoint.0 = cp_pos;
+        }
+    }
+}
+
+/// Activates glowing [`CheckpointBeacon`] pylons when the player passes them,
+/// updating respawn point, healing `-25%`, and flashing a crisp checkpoint banner!
+#[allow(clippy::type_complexity)]
+fn update_checkpoint_beacons(
+    mut checkpoint: ResMut<PlayerCheckpoint>,
+    mut status: ResMut<EncounterStatus>,
+    mut players: Query<(Entity, &KinematicBody, &mut DamagePercent), With<Player>>,
+    mut beacons: Query<&mut CheckpointBeacon>,
+    mut move_events: MessageWriter<MovementEvent>,
+    mut vis_events: MessageWriter<CombatVisualEvent>,
+) {
+    let Ok((player_entity, body, mut pct)) = players.single_mut() else {
+        return;
+    };
+    for mut beacon in &mut beacons {
+        if beacon.activated {
+            continue;
+        }
+        let dx = (body.position.x - beacon.pos.x).abs();
+        let dy = (body.position.y - (beacon.pos.y + 22.0)).abs();
+        if dx <= 28.0 && dy <= 42.0 {
+            beacon.activated = true;
+            let safe_spawn = beacon.pos + Vec2::new(0.0, 26.0);
+            if safe_spawn.x >= checkpoint.0.x {
+                checkpoint.0 = safe_spawn;
+            }
+            pct.0 = (pct.0 - 25.0).max(0.0);
+            status.banner_text = format!("CHECKPOINT {} ACTIVATED  •  -25% REPAIRED!", beacon.id);
+            status.banner_timer = 2.4;
+            move_events.write(MovementEvent {
+                entity: player_entity,
+                kind: MovementFxKind::Checkpoint,
+                pos: beacon.pos + Vec2::new(0.0, 20.0),
+                dir: Vec2::Y,
+            });
+            vis_events.write(CombatVisualEvent::ShockwaveRing {
+                pos: beacon.pos + Vec2::new(0.0, 20.0),
+                max_radius: 48.0,
+                color_rgb: [0.35, 4.2, 5.4],
+            });
+        }
+    }
+}
+
+/// Collects floating Energy Cores, Secret Golden Data Relics, and Emerald Heal Canisters!
+#[allow(clippy::type_complexity)]
+fn update_collectible_items(
+    mut commands: Commands,
+    mut score: ResMut<ArenaScore>,
+    mut status: ResMut<EncounterStatus>,
+    mut players: Query<(Entity, &KinematicBody, &mut DamagePercent), With<Player>>,
+    items: Query<(Entity, &CollectibleItem)>,
+    mut move_events: MessageWriter<MovementEvent>,
+    mut vis_events: MessageWriter<CombatVisualEvent>,
+) {
+    let Ok((player_entity, body, mut pct)) = players.single_mut() else {
+        return;
+    };
+    for (item_entity, item) in &items {
+        let r = item.pickup_radius() + 14.0;
+        if body.position.distance_squared(item.pos) > r * r {
+            continue;
+        }
+        match item.kind {
+            CollectibleKind::EnergyCore => {
+                score.cores_collected += 1;
+                pct.0 = (pct.0 - 5.0).max(0.0);
+                move_events.write(MovementEvent {
+                    entity: player_entity,
+                    kind: MovementFxKind::CollectCore,
+                    pos: item.pos,
+                    dir: Vec2::Y,
+                });
+            }
+            CollectibleKind::SecretRelic => {
+                score.relics_collected += 1;
+                pct.0 = (pct.0 - 20.0).max(0.0);
+                status.banner_text = format!(
+                    "SECRET DATA RELIC FOUND!  ({}/{})",
+                    score.relics_collected,
+                    score.relics_total.max(score.relics_collected)
+                );
+                status.banner_timer = 3.0;
+                move_events.write(MovementEvent {
+                    entity: player_entity,
+                    kind: MovementFxKind::CollectRelic,
+                    pos: item.pos,
+                    dir: Vec2::Y,
+                });
+                vis_events.write(CombatVisualEvent::CounterTrigger { pos: item.pos });
+            }
+            CollectibleKind::HealCanister => {
+                pct.0 = (pct.0 - 40.0).max(0.0);
+                status.banner_text = "NANO-REPAIR CANISTER  •  -40% DAMAGE!".to_string();
+                status.banner_timer = 2.0;
+                move_events.write(MovementEvent {
+                    entity: player_entity,
+                    kind: MovementFxKind::CollectHeal,
+                    pos: item.pos,
+                    dir: Vec2::Y,
+                });
+                vis_events.write(CombatVisualEvent::ShockwaveRing {
+                    pos: item.pos,
+                    max_radius: 40.0,
+                    color_rgb: [0.4, 4.8, 2.2],
+                });
+            }
+        }
+        commands.entity(item_entity).despawn();
+    }
+}
+
+/// Processes melee/Buster damage against cracked [`BreakableWall`] bulkheads, shattering them open!
+#[allow(clippy::type_complexity)]
+fn update_breakable_walls(
+    mut commands: Commands,
+    mut hit_events: MessageReader<CombatHitEvent>,
+    mut score: ResMut<ArenaScore>,
+    mut status: ResMut<EncounterStatus>,
+    mut move_events: MessageWriter<MovementEvent>,
+    mut vis_events: MessageWriter<CombatVisualEvent>,
+    mut walls: Query<(Entity, &mut BreakableWall, &mut KinematicBody, &mut Transform)>,
+) {
+    // Keep unbroken walls strictly anchored in place
+    for (entity, wall, mut body, mut tf) in &mut walls {
+        body.position = wall.center;
+        body.velocity = Vec2::ZERO;
+        body.ground_speed = 0.0;
+        body.state = MovementState::Grounded;
+        tf.translation.x = wall.center.x;
+        tf.translation.y = wall.center.y;
+        commands.entity(entity).remove::<Hitstun>();
+    }
+
+    let mut broken: HashSet<Entity> = HashSet::new();
+    for ev in hit_events.read() {
+        if broken.contains(&ev.target) {
+            continue;
+        }
+        let Ok((wall_entity, mut wall, _, _)) = walls.get_mut(ev.target) else {
+            continue;
+        };
+        wall.hp = (wall.hp - ev.damage).max(0.0);
+        if wall.hp <= 0.0 {
+            broken.insert(wall_entity);
+            score.walls_broken += 1;
+            status.banner_text = "BULKHEAD SHATTERED  •  SECRET PATH OPEN!".to_string();
+            status.banner_timer = 2.2;
+            move_events.write(MovementEvent {
+                entity: ev.attacker,
+                kind: MovementFxKind::WallBreak,
+                pos: wall.center,
+                dir: Vec2::Y,
+            });
+            vis_events.write(CombatVisualEvent::GroundSlam { pos: wall.center });
+            vis_events.write(CombatVisualEvent::ShockwaveRing {
+                pos: wall.center,
+                max_radius: 54.0,
+                color_rgb: [5.0, 2.4, 0.4],
+            });
+            commands.entity(wall_entity).despawn();
+        }
+    }
+}
+
+/// Cycles rhythmic Mega Man X [`TimedHazardBeam`] magma vents (`Off -> Telegraph -> Active`)
+/// and applies non-instant-death Smash knockback + brief i-frames on contact while active.
+#[allow(clippy::type_complexity)]
+fn update_timed_hazard_beams(
+    mut commands: Commands,
+    fixed_time: Res<Time<Fixed>>,
+    mut beams: Query<&mut TimedHazardBeam>,
+    mut players: Query<
+        (
+            Entity,
+            &mut KinematicBody,
+            &mut DamagePercent,
+            Option<&Invulnerable>,
+        ),
+        With<Player>,
+    >,
+    mut hit_events: MessageWriter<CombatHitEvent>,
+) {
+    let dt = fixed_time.delta_secs();
+    for mut beam in &mut beams {
+        beam.timer = (beam.timer + dt).rem_euclid(beam.cycle_secs());
+    }
+
+    for (player_entity, mut body, mut percent, invuln) in &mut players {
+        if invuln.is_some_and(Invulnerable::is_active) {
+            continue;
+        }
+        for beam in &beams {
+            if beam.phase() == HazardBeamPhase::Active
+                && beam.overlaps(body.position, body.half_extents)
+            {
+                percent.0 += beam.damage;
+                let push_dir = if body.position.x >= beam.center.x {
+                    1.0
+                } else {
+                    -1.0
+                };
+                let kb_vec = Vec2::new(push_dir * 165.0, 290.0);
+                body.velocity = kb_vec;
+                body.ground_speed = kb_vec.x;
+                body.state = MovementState::Airborne;
+                body.on_one_way = false;
+                body.coyote_timer = 0.0;
+
+                commands.entity(player_entity).insert((
+                    Invulnerable::new(1.05),
+                    Hitstun::new(0.24),
+                    Hitstop::from_frames(4),
+                ));
+                hit_events.write(CombatHitEvent {
+                    attacker: player_entity,
+                    target: player_entity,
+                    hit_pos: body.position,
+                    damage: beam.damage,
+                    target_percent_after: percent.0,
+                    knockback_mag: kb_vec.length(),
+                    knockback_vec: kb_vec,
+                    hitstop_frames: 4,
+                    is_charged: true,
+                });
+                break;
+            }
         }
     }
 }

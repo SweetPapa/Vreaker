@@ -1063,6 +1063,7 @@ fn spawn_victory_screen(
     let mins = (total / 60.0).floor() as u32;
     let secs = (total % 60.0).floor() as u32;
     let cs = (total.fract() * 100.0).floor() as u32;
+    let rank = score.compute_stage_rank(total, combo.best_hits);
 
     commands
         .spawn((
@@ -1093,9 +1094,9 @@ fn spawn_victory_screen(
             ))
             .with_children(|card| {
                 card.spawn((
-                    Text::new("STAGE 1 CLEAR!"),
+                    Text::new(format!("STAGE 1 CLEAR!   •   RANK  {rank}")),
                     TextFont {
-                        font_size: FontSize::Px(44.0),
+                        font_size: FontSize::Px(42.0),
                         ..default()
                     },
                     TextColor(COLOR_ACCENT_CYAN),
@@ -1110,8 +1111,13 @@ fn spawn_victory_screen(
                 ));
                 card.spawn((
                     Text::new(format!(
-                        "CLEAR TIME: {mins:02}:{secs:02}.{cs:02}   |   KOs: {}   |   ARENAS: {}   |   BEST COMBO: {} HITS",
-                        score.ko_count, score.encounters_cleared, combo.best_hits
+                        "TIME: {mins:02}:{secs:02}.{cs:02}  |  KOs: {}  |  BEST COMBO: {}  |  CORES: {}/{}  |  RELICS: {}/{}",
+                        score.ko_count,
+                        combo.best_hits,
+                        score.cores_collected,
+                        score.cores_total,
+                        score.relics_collected,
+                        score.relics_total
                     )),
                     TextFont {
                         font_size: FontSize::Px(14.0),
@@ -1841,28 +1847,37 @@ fn update_zone_and_ko_banner(
     let zone_name = players
         .single()
         .map(|b| {
-            if b.position.x >= 4460.0 {
-                "ACT 5: VULCANUS SANCTUM (BOSS)"
-            } else if b.position.x >= 3920.0 {
-                "ACT 5: BOSS APPROACH"
-            } else if b.position.x >= 3320.0 {
-                "ACT 4: FORGE GAUNTLET"
-            } else if b.position.x >= 1460.0 {
-                "ACT 4: SKY-FORGE RUN"
-            } else if b.position.x >= 840.0 {
-                "ACT 3: SMELTER CAGE"
-            } else if b.position.x >= 460.0 {
-                "ACT 2: WALL-JUMP SHAFT"
+            if b.position.x >= 8520.0 {
+                "SECTOR 8: VULCANUS SANCTUM (BOSS)"
+            } else if b.position.x >= 7440.0 {
+                "SECTOR 8: CITADEL APPROACH"
+            } else if b.position.x >= 6780.0 {
+                "SECTOR 7: REACTOR CRUCIBLE"
+            } else if b.position.x >= 5280.0 {
+                "SECTOR 6: CONVEYOR TOWER"
+            } else if b.position.x >= 3660.0 {
+                "SECTOR 5: SKY-GONDOLA ABYSS"
+            } else if b.position.x >= 1740.0 {
+                "SECTOR 4: SLAG-SLOPE SPEEDWAY"
+            } else if b.position.x >= 1100.0 {
+                "SECTOR 3: SMELTER CAGE"
+            } else if b.position.x >= 470.0 {
+                "SECTOR 2: SMELTER SHAFT"
             } else {
-                "ACT 1: ENTRY DECK"
+                "SECTOR 1: OUTER DECK"
             }
         })
-        .unwrap_or("ACT 1: ENTRY DECK");
+        .unwrap_or("SECTOR 1: OUTER DECK");
 
     if let Ok(mut header) = header_labels.single_mut() {
         **header = format!(
-            "FOUNDRY CITADEL  •  {}   |   KOs: {}   |   F2: D-PAD CAL",
-            zone_name, score.ko_count
+            "FOUNDRY CITADEL  •  {}  |  KOs: {}  |  CORES: {}/{}  |  RELICS: {}/{}",
+            zone_name,
+            score.ko_count,
+            score.cores_collected,
+            score.cores_total,
+            score.relics_collected,
+            score.relics_total
         );
     }
 

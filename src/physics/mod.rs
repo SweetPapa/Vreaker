@@ -25,8 +25,9 @@ use crate::player::{Player, PlayerRespawnState};
 use crate::state::AppState;
 
 pub use geometry::{
-    BoostPad, GroundHit, MAX_WALKABLE_SLOPE_COS, MovingPlatform, OneWayPlatform, SlopeSegment,
-    SolidRect, SpikeHazard,
+    BoostPad, BreakableWall, CheckpointBeacon, CollectibleItem, CollectibleKind, GroundHit,
+    HazardBeamPhase, JumpPad, MAX_WALKABLE_SLOPE_COS, MovingPlatform, OneWayPlatform, SlopeSegment,
+    SolidRect, SpikeHazard, TimedHazardBeam,
 };
 pub use loop_spline::{LoopSpline, SplineSample};
 
@@ -38,6 +39,12 @@ pub enum MovementFxKind {
     WallJump,
     Land,
     BoostPad,
+    JumpPad,
+    Checkpoint,
+    CollectCore,
+    CollectRelic,
+    CollectHeal,
+    WallBreak,
     SpinDashRev,
     SpinDashRelease,
     ShieldBlock,
@@ -606,23 +613,27 @@ pub fn step_kinematic_physics(
     slopes_q: Query<&SlopeSegment>,
     one_ways_q: Query<&OneWayPlatform>,
     boost_pads_q: Query<&BoostPad>,
+    jump_pads_q: Query<&JumpPad>,
     loops_q: Query<&LoopSpline>,
-    mut bodies: Query<(
-        Entity,
-        &mut KinematicBody,
-        &mut Transform,
-        Option<&PlayerIntent>,
-        Option<&AttackState>,
-        Option<&PlayerRespawnState>,
-        Option<&Hitstop>,
-        Option<&Hitstun>,
-        Option<&ShieldState>,
-        Option<&AirDodgeState>,
-        Option<&GroundDodgeState>,
-        Option<&SmashChargeState>,
-        Option<&CounterStance>,
-        Option<&MeteorDiveState>,
-    )>,
+    mut bodies: Query<
+        (
+            Entity,
+            &mut KinematicBody,
+            &mut Transform,
+            Option<&PlayerIntent>,
+            Option<&AttackState>,
+            Option<&PlayerRespawnState>,
+            Option<&Hitstop>,
+            Option<&Hitstun>,
+            Option<&ShieldState>,
+            Option<&AirDodgeState>,
+            Option<&GroundDodgeState>,
+            Option<&SmashChargeState>,
+            Option<&CounterStance>,
+            Option<&MeteorDiveState>,
+        ),
+        Without<BreakableWall>,
+    >,
     mut movement_events: MessageWriter<MovementEvent>,
 ) {
     let dt = fixed_time.delta_secs();
@@ -634,6 +645,7 @@ pub fn step_kinematic_physics(
     let slopes: Vec<SlopeSegment> = slopes_q.iter().copied().collect();
     let one_ways: Vec<OneWayPlatform> = one_ways_q.iter().copied().collect();
     let boost_pads: Vec<BoostPad> = boost_pads_q.iter().copied().collect();
+    let jump_pads: Vec<JumpPad> = jump_pads_q.iter().copied().collect();
     let loops: Vec<&LoopSpline> = loops_q.iter().collect();
 
     for (
@@ -684,6 +696,7 @@ pub fn step_kinematic_physics(
                 &slopes,
                 &one_ways,
                 &boost_pads,
+                &jump_pads,
                 &loops,
                 &mut movement_events,
             );
@@ -779,6 +792,7 @@ fn apply_fighter_pushbox_separation(
         (
             With<Hurtbox>,
             Without<WallTurret>,
+            Without<BreakableWall>,
             Without<Hitstop>,
             Without<Hitstun>,
         ),
@@ -871,6 +885,7 @@ fn step_single_body(
     slopes: &[SlopeSegment],
     one_ways: &[OneWayPlatform],
     boost_pads: &[BoostPad],
+    jump_pads: &[JumpPad],
     loops: &[&LoopSpline],
     events: &mut MessageWriter<MovementEvent>,
 ) {
@@ -1093,6 +1108,29 @@ fn step_single_body(
                     });
                 }
             }
+        }
+    }
+
+    // 4b. Pneumatic Foundry Spring Launchers (JumpPads)
+    for jpad in jump_pads {
+        if jpad.overlaps(body.position, body.half_extents) && body.velocity.y < jpad.launch_vy * 0.72 {
+            body.velocity.y = jpad.launch_vy;
+            body.position.y = (jpad.center.y + jpad.half_extents.y + body.half_extents.y + 2.0)
+                .max(body.position.y);
+            body.state = MovementState::Airborne;
+            body.on_one_way = false;
+            body.coyote_timer = 0.0;
+            body.jump_cut_applied = true;
+            body.ground_normal = Vec2::Y;
+            body.visual_angle = 0.0;
+            body.air_jumps_remaining = 1; // Refreshes mid-air double jump!
+            events.write(MovementEvent {
+                entity,
+                kind: MovementFxKind::JumpPad,
+                pos: jpad.center + Vec2::new(0.0, jpad.half_extents.y),
+                dir: Vec2::Y,
+            });
+            break;
         }
     }
 

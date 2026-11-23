@@ -41,6 +41,11 @@ pub struct GameAudioAssets {
     pub smash_release: Option<Handle<AudioSource>>,
     pub fast_fall: Option<Handle<AudioSource>>,
     pub arcane_erupt: Option<Handle<AudioSource>>,
+    pub jump_pad: Option<Handle<AudioSource>>,
+    pub checkpoint: Option<Handle<AudioSource>>,
+    pub collect_core: Option<Handle<AudioSource>>,
+    pub collect_relic: Option<Handle<AudioSource>>,
+    pub wall_break: Option<Handle<AudioSource>>,
 }
 
 /// Plugin registering graceful Kenney SFX loading, procedural fallbacks, and looping BGM crossfades.
@@ -208,6 +213,21 @@ fn load_sfx_with_procedural_fallback(
     sfx.arcane_erupt = Some(audio_assets.add(AudioSource {
         bytes: synthesize_pcm_wav(280.0, 960.0, 0.22, true).into(),
     }));
+    sfx.jump_pad = Some(audio_assets.add(AudioSource {
+        bytes: synthesize_rising_charge_wav(220.0, 960.0, 0.18).into(),
+    }));
+    sfx.checkpoint = Some(audio_assets.add(AudioSource {
+        bytes: synthesize_rising_charge_wav(440.0, 1180.0, 0.28).into(),
+    }));
+    sfx.collect_core = Some(audio_assets.add(AudioSource {
+        bytes: synthesize_pcm_wav(740.0, 1240.0, 0.08, false).into(),
+    }));
+    sfx.collect_relic = Some(audio_assets.add(AudioSource {
+        bytes: synthesize_rising_charge_wav(520.0, 1560.0, 0.36).into(),
+    }));
+    sfx.wall_break = Some(audio_assets.add(AudioSource {
+        bytes: synthesize_pcm_wav(180.0, 42.0, 0.26, true).into(),
+    }));
 }
 
 fn play_sfx(commands: &mut Commands, handle: &Option<Handle<AudioSource>>, volume: f32) {
@@ -239,6 +259,21 @@ fn play_movement_sfx(
             }
             MovementFxKind::BoostPad | MovementFxKind::SpinDashRelease => {
                 play_sfx(&mut commands, &sfx.boost_pad, vol);
+            }
+            MovementFxKind::JumpPad => {
+                play_sfx(&mut commands, &sfx.jump_pad, vol);
+            }
+            MovementFxKind::Checkpoint => {
+                play_sfx(&mut commands, &sfx.checkpoint, vol);
+            }
+            MovementFxKind::CollectCore => {
+                play_sfx(&mut commands, &sfx.collect_core, vol * 0.85);
+            }
+            MovementFxKind::CollectRelic | MovementFxKind::CollectHeal => {
+                play_sfx(&mut commands, &sfx.collect_relic, vol);
+            }
+            MovementFxKind::WallBreak => {
+                play_sfx(&mut commands, &sfx.wall_break, vol);
             }
             MovementFxKind::SpinDashRev => {
                 play_sfx(&mut commands, &sfx.spin_rev, vol);

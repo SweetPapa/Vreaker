@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
-"""Generates `assets/levels/demo_gym.ldtk` — *STAGE 1: THE FOUNDRY CITADEL*.
+"""Generates `assets/levels/demo_gym.ldtk` — *FULL STAGE 1: THE FOUNDRY CITADEL*.
 
-A full, tightly paced 5-Act Mega Man X x Super Smash Bros. side-scrolling action stage (~5,600px):
-  - Act 1: Entry Deck & Dash-Jump Catwalks (roaming Rogue Striker, Arcanist, Shadow Assassin)
-  - Act 2: Vertical Mega Man X Wall-Jump Shaft (moving elevator, spike alcove, 2 wall turrets)
-  - Act 3: LOCKDOWN AMBUSH #1 — "THE SMELTER CAGE" (3 Smash platforms, 2 surrounding waves)
-  - Act 4A: ~25s Mega Man X Platforming Intermission (Boost chasm, Spike pit + turret, Moving
-            sky-bridge over abyss, Mini wall-jump chimney + drop-through ledges, roaming foes)
-  - Act 4B: LOCKDOWN AMBUSH #2 — "FORGE GAUNTLET" (1 tight, high-intensity 4-enemy elite wave)
-  - Act 5A: Pre-Boss Gauntlet Hallway (vent gap, vanguard guard, turret, crimson boss bridge)
-  - Act 5B: BOSS SANCTUM — "IRON TITAN: VULCANUS" (144px 2-Phase Boss with telegraphed lasers!)
+A richly designed, full-length (~9,700px) 8-Sector Mega Man X x Super Smash Bros. flagship stage:
+  - Sector 1: Outer Foundry Deck (-320 .. 470) — warm-up skirmishes, secret Breakable Bulkhead, uphill slope
+  - Sector 2: Vertical Smelter Shaft (470 .. 1100) — Mega Man X wall-jump climb, moving lift, 2 turrets,
+              Hidden Overlook with SECRET RELIC #1/3, Checkpoint #1
+  - Sector 3: LOCKDOWN ARENA #1 — "THE SMELTER CAGE" (1100 .. 1740) — 3 Smash platforms, 2 ambush waves
+  - Sector 4: The Slag-Slope Speedway (1740 .. 3660) — downhill speed slope, Boost chasm, BRANCHING HIGH
+              (Spring Launcher -> Timed Magma Vents -> Breakable Bulkhead -> SECRET RELIC #2/3) vs LOW
+              (Spike pit, Brawler + Arcanist combat lane, uphill rejoin slope), Checkpoints #2 & #3
+  - Sector 5: Sky-Gondola Abyss & Timed Vent Bridge (3660 .. 5280) — twin synchronized gondolas over deep
+              abyss, 3-phase Timed Magma-Vent Bridge, Spring-Vault Ascent onto elevated Sky Foundry Deck
+  - Sector 6: The Foundry Conveyor Tower (5280 .. 6780) — vertical switchback tower with lift & turrets,
+              Left Summit Breakable Vault containing SECRET RELIC #3/3 + Heal Pod, Stepped Descent Cascade,
+              Checkpoint #4
+  - Sector 7: LOCKDOWN ARENA #2 — "THE REACTOR CRUCIBLE" (6780 .. 7440) — 4 Smash platforms + twin corner
+              Spring Launchers, 2 elite waves -> full 0% heal!
+  - Sector 8A: The Citadel Approach (7440 .. 8520) — high-speed Boost Runway across Reactor Trench, final
+              Vanguard Bridge, Checkpoint #5 + Full Heal Canister
+  - Sector 8B: BOSS SANCTUM — "IRON TITAN: VULCANUS" (8520 .. 9220) — grand 700px arena with 3 Smash
+              platforms + 2 corner Spring Launchers for 2-Phase Vulcanus (including Phase 2 Cyclone Spin!)
 """
 
 from __future__ import annotations
@@ -19,7 +29,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-LEVEL_W = 5600
+LEVEL_W = 10000
 LEVEL_H = 960
 ORIGIN_X = -360.0
 ORIGIN_Y = -260.0
@@ -37,7 +47,7 @@ UID = uid_gen()
 
 
 def make_uuid(seed: str) -> str:
-    return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"velocity-breaker.foundry-citadel.{seed}"))
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"velocity-breaker.foundry-citadel.v2.{seed}"))
 
 
 def bevy_rect_to_ldtk(min_x: float, min_y: float, max_x: float, max_y: float) -> tuple[int, int, int, int]:
@@ -109,10 +119,15 @@ def build_demo_gym() -> dict[str, Any]:
         ("SolidBlock", "#3B4A68"),
         ("Slope", "#22D3EE"),
         ("BoostPad", "#00F5FF"),
+        ("JumpPad", "#FBBF24"),
+        ("CheckpointBeacon", "#38BDF8"),
+        ("Collectible", "#FDE047"),
+        ("BreakableWall", "#EA580C"),
+        ("TimedHazardBeam", "#F43F5E"),
         ("OneWayPlatform", "#F59E0B"),
         ("MovingPlatform", "#14B8A6"),
         ("SpikeHazard", "#EF4444"),
-        ("WallTurret", "#F43F5E"),
+        ("WallTurret", "#E11D48"),
         ("EnemySpawn", "#FB7185"),
         ("EncounterZone", "#F97316"),
         ("BossSpawn", "#DC2626"),
@@ -153,247 +168,509 @@ def build_demo_gym() -> dict[str, Any]:
             }
         )
 
+    def add_core(x: float, y: float, tag: str) -> None:
+        add_entity("Collectible", bevy_point_to_ldtk(x, y, 16), [field_inst("kind", "String", "core", 630)], tag)
+
+    def add_relic(x: float, y: float, tag: str) -> None:
+        add_entity("Collectible", bevy_point_to_ldtk(x, y, 22), [field_inst("kind", "String", "relic", 630)], tag)
+
+    def add_heal(x: float, y: float, tag: str) -> None:
+        add_entity("Collectible", bevy_point_to_ldtk(x, y, 18), [field_inst("kind", "String", "heal", 630)], tag)
+
+    def add_checkpoint(cp_id: int, x: float, floor_y: float, tag: str) -> None:
+        add_entity(
+            "CheckpointBeacon",
+            bevy_rect_to_ldtk(x - 10, floor_y, x + 10, floor_y + 44),
+            [field_inst("checkpoint_id", "Int", cp_id, 620)],
+            tag,
+        )
+
+    def add_slope(x0: float, y0: float, x1: float, y1: float, tag: str) -> None:
+        min_x, max_x = min(x0, x1), max(x0, x1)
+        min_y, max_y = min(y0, y1), max(y0, y1)
+        add_entity(
+            "Slope",
+            bevy_rect_to_ldtk(min_x, min_y, max_x, max(max_y, min_y + 8)),
+            [
+                field_inst("start_x", "Float", float(x0), 501),
+                field_inst("start_y", "Float", float(y0), 502),
+                field_inst("end_x", "Float", float(x1), 503),
+                field_inst("end_y", "Float", float(y1), 504),
+            ],
+            tag,
+        )
+
     # =========================================================================
-    # ACT 1 — FOUNDRY ENTRY DECK & DASH-JUMP CATWALKS (-320 .. 650)
+    # SECTOR 1 — OUTER FOUNDRY DECK (-320 .. 470)
     # =========================================================================
     add_entity("PlayerSpawn", bevy_point_to_ldtk(-230, 20, 24), [], "spawn")
-    add_entity("SolidBlock", bevy_rect_to_ldtk(-348, -40, -320, 280), [], "act1_left_wall")
-    add_entity("SolidBlock", bevy_rect_to_ldtk(-320, -40, -60, 0), [], "act1_start_deck")
-    add_entity("OneWayPlatform", bevy_rect_to_ldtk(-244, 58, -138, 64), [], "act1_start_oneway")
+    add_entity("SolidBlock", bevy_rect_to_ldtk(-348, -40, -320, 300), [], "s1_left_wall")
+    add_entity("SolidBlock", bevy_rect_to_ldtk(-320, -40, -10, 0), [], "s1_start_deck")
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(-244, 58, -138, 64), [], "s1_start_catwalk")
+    add_core(-190, 82, "s1_core_1")
     add_entity(
         "EnemySpawn",
-        bevy_point_to_ldtk(-102, 22, 24),
+        bevy_point_to_ldtk(-78, 22, 24),
         [field_inst("archetype", "String", "light", 540)],
-        "act1_enemy_opener",
+        "s1_opener_rogue",
     )
 
-    # Dash-Jump Gap 1 (-60..24) -> Mid Island (24..210)
-    add_entity("SolidBlock", bevy_rect_to_ldtk(24, -40, 210, 0), [], "act1_mid_island")
-    add_entity("OneWayPlatform", bevy_rect_to_ldtk(68, 64, 168, 70), [], "act1_mid_oneway")
+    # Jump Gap 1 (-10 .. 64) guided by Energy Core arc -> Mid Concourse (64 .. 300)
+    add_core(26, 46, "s1_core_gap")
+    add_entity("SolidBlock", bevy_rect_to_ldtk(64, -40, 300, 0), [], "s1_mid_concourse")
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(108, 64, 248, 70), [], "s1_mid_upper")
+    # Cracked Breakable Bulkhead right under the catwalk guarding a secret storage bay!
+    add_entity(
+        "BreakableWall",
+        bevy_rect_to_ldtk(168, 0, 192, 62),
+        [field_inst("hp", "Float", 20.0, 640)],
+        "s1_breakable_bay",
+    )
+    add_core(216, 22, "s1_core_bay")
+    add_heal(248, 22, "s1_heal_bay")
     add_entity(
         "EnemySpawn",
-        bevy_point_to_ldtk(126, 86, 24),
+        bevy_point_to_ldtk(178, 88, 24),
         [field_inst("archetype", "String", "mage", 540)],
-        "act1_enemy_mage",
+        "s1_concourse_mage",
     )
 
-    # Dash-Jump Gap 2 (210..294) -> Shaft Approach & Floor (294..650)
-    add_entity("SolidBlock", bevy_rect_to_ldtk(294, -12, 650, 28), [], "act1_shaft_approach")
+    # Smooth Uphill Foundry Ramp (300,0 -> 380,28) into Shaft Approach (380 .. 650, y=28)
+    add_slope(300, 0, 380, 28, "s1_uphill_ramp")
+    add_entity("SolidBlock", bevy_rect_to_ldtk(380, -12, 650, 28), [], "s1_shaft_approach")
     add_entity(
         "EnemySpawn",
-        bevy_point_to_ldtk(392, 50, 24),
+        bevy_point_to_ldtk(438, 50, 24),
         [field_inst("archetype", "String", "assassin", 540)],
-        "act1_enemy_assassin",
+        "s1_approach_assassin",
     )
 
     # =========================================================================
-    # ACT 2 — VERTICAL MEGA MAN X WALL-JUMP SHAFT (470 .. 650)
+    # SECTOR 2 — VERTICAL SMELTER SHAFT & HIDDEN OVERLOOK (470 .. 1100)
     # =========================================================================
-    add_entity("SolidBlock", bevy_rect_to_ldtk(470, 116, 496, 330), [], "act2_shaft_wall_left")
-    add_entity("SolidBlock", bevy_rect_to_ldtk(624, 28, 650, 220), [], "act2_shaft_wall_right")
-    add_entity("SpikeHazard", bevy_rect_to_ldtk(580, 28, 622, 40), [], "act2_shaft_spike")
+    # Left wall stays strictly at x=470..496, min_y=116 (>= 110 doorway contract!)
+    add_entity("SolidBlock", bevy_rect_to_ldtk(470, 116, 496, 344), [], "s2_shaft_wall_left")
+    add_entity("SolidBlock", bevy_rect_to_ldtk(624, 28, 650, 220), [], "s2_shaft_wall_right")
+    add_entity("SpikeHazard", bevy_rect_to_ldtk(580, 28, 622, 40), [], "s2_shaft_spike")
     add_entity(
         "MovingPlatform",
         bevy_rect_to_ldtk(532, 122, 588, 128),
         [
             field_inst("travel_x", "Float", 0.0, 520),
-            field_inst("travel_y", "Float", 66.0, 521),
-            field_inst("speed", "Float", 1.8, 522),
+            field_inst("travel_y", "Float", 70.0, 521),
+            field_inst("speed", "Float", 1.75, 522),
         ],
-        "act2_moving_elev",
+        "s2_moving_elev",
     )
     add_entity(
         "WallTurret",
         bevy_point_to_ldtk(614, 68, 20),
         [field_inst("facing", "Float", -1.0, 530)],
-        "act2_turret_lower",
+        "s2_turret_lower",
     )
     add_entity(
         "WallTurret",
-        bevy_point_to_ldtk(506, 170, 20),
+        bevy_point_to_ldtk(506, 172, 20),
         [field_inst("facing", "Float", 1.0, 530)],
-        "act2_turret_upper",
+        "s2_turret_upper",
     )
-    add_entity("SolidBlock", bevy_rect_to_ldtk(624, 196, 840, 220), [], "act2_exit_bridge")
+    # Hidden Overlook above the Shaft Left Wall -> SECRET RELIC #1/3!
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(528, 278, 594, 284), [], "s2_overlook_step")
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(392, 344, 500, 350), [], "s2_secret_overlook")
+    add_relic(436, 372, "s2_secret_relic_1")
+    add_core(474, 370, "s2_core_overlook")
+
+    # Exit Bridge (624 .. 1100, y=220) with Checkpoint #1 & Iron Brawler Gatekeeper
+    add_entity("SolidBlock", bevy_rect_to_ldtk(624, 196, 1100, 220), [], "s2_exit_bridge")
+    add_checkpoint(1, 712, 220, "s2_checkpoint_1")
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(805, 284, 925, 290), [], "s2_bridge_perch")
+    add_heal(865, 312, "s2_bridge_heal")
+    add_core(770, 246, "s2_core_bridge")
+    add_entity(
+        "EnemySpawn",
+        bevy_point_to_ldtk(955, 244, 24),
+        [field_inst("archetype", "String", "heavy", 540)],
+        "s2_bridge_brawler",
+    )
 
     # =========================================================================
-    # ACT 3 — LOCKDOWN AMBUSH #1: "THE SMELTER CAGE" (840 .. 1460)
+    # SECTOR 3 — LOCKDOWN ARENA #1: "THE SMELTER CAGE" (1100 .. 1740)
     # =========================================================================
-    add_entity("SolidBlock", bevy_rect_to_ldtk(840, 196, 1460, 220), [], "act3_smelter_deck")
-    add_entity("OneWayPlatform", bevy_rect_to_ldtk(915, 284, 1025, 290), [], "act3_plat_left")
-    add_entity("OneWayPlatform", bevy_rect_to_ldtk(1275, 284, 1385, 290), [], "act3_plat_right")
-    add_entity("OneWayPlatform", bevy_rect_to_ldtk(1085, 350, 1215, 356), [], "act3_plat_top")
+    add_entity("SolidBlock", bevy_rect_to_ldtk(1100, 196, 1740, 220), [], "s3_smelter_deck")
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(1175, 286, 1295, 292), [], "s3_plat_left")
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(1545, 286, 1665, 292), [], "s3_plat_right")
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(1355, 354, 1485, 360), [], "s3_plat_top")
     add_entity(
         "EncounterZone",
-        bevy_rect_to_ldtk(840, 220, 1460, 500),
+        bevy_rect_to_ldtk(1100, 220, 1740, 520),
         [
             field_inst("encounter_id", "Int", 1, 600),
             field_inst("title", "String", "THE SMELTER CAGE", 601),
             field_inst("preset", "String", "smelter_cage", 602),
-            field_inst("trigger_x", "Float", 940.0, 603),
+            field_inst("trigger_x", "Float", 1200.0, 603),
             field_inst("floor_y", "Float", 220.0, 604),
         ],
-        "act3_encounter_smelter",
+        "s3_encounter_smelter",
     )
 
     # =========================================================================
-    # ACT 4A — SUBSTANTIAL MEGA MAN X PLATFORMING INTERMISSION (1460 .. 3320)
-    #          (~25s of unlocked-camera dash-jumps, hazards, moving bridge,
-    #           mini wall-jump chimney, turrets & isolated foes!)
+    # SECTOR 4 — THE SLAG-SLOPE SPEEDWAY & HIGH/LOW BRANCH (1740 .. 3660)
     # =========================================================================
-    # 1. Boost-Jump Launch Deck (1460..1710) over Molten Chasm (1710..1850)
-    add_entity("SolidBlock", bevy_rect_to_ldtk(1460, 196, 1710, 220), [], "act4a_boost_deck")
+    add_entity("SolidBlock", bevy_rect_to_ldtk(1740, 196, 1900, 220), [], "s4_exit_lip")
+    add_checkpoint(2, 1810, 220, "s4_checkpoint_2")
+    # Exhilarating 280px downhill Foundry Speed Slope (1900,220 -> 2180,140)!
+    add_slope(1900, 220, 2180, 140, "s4_downhill_slope")
+    add_core(1980, 214, "s4_core_slope1")
+    add_core(2080, 186, "s4_core_slope2")
+    # Boost Launch Deck (2180 .. 2360, y=140) -> Molten Chasm (2360 .. 2510)
+    add_entity("SolidBlock", bevy_rect_to_ldtk(2180, 116, 2360, 140), [], "s4_boost_deck")
     add_entity(
         "BoostPad",
-        bevy_rect_to_ldtk(1600, 220, 1680, 232),
+        bevy_rect_to_ldtk(2245, 140, 2335, 152),
         [
-            field_inst("target_speed", "Float", 470.0, 510),
+            field_inst("target_speed", "Float", 500.0, 510),
             field_inst("dir_x", "Float", 1.0, 511),
         ],
-        "act4a_boost_pad",
+        "s4_boost_pad",
     )
-    add_entity("OneWayPlatform", bevy_rect_to_ldtk(1732, 282, 1826, 288), [], "act4a_chasm_plat")
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(2395, 182, 2475, 188), [], "s4_chasm_safety")
+    add_core(2435, 226, "s4_core_chasm_arc")
 
-    # 2. Spike Pit Hazard Catwalk (1850..2260) with staggered upper ledges, Arcanist & Turret
-    add_entity("SolidBlock", bevy_rect_to_ldtk(1850, 196, 2260, 220), [], "act4a_spike_catwalk")
-    add_entity("SpikeHazard", bevy_rect_to_ldtk(1970, 220, 2094, 232), [], "act4a_catwalk_spikes")
-    add_entity("OneWayPlatform", bevy_rect_to_ldtk(1955, 278, 2045, 284), [], "act4a_spike_over_l")
-    add_entity("OneWayPlatform", bevy_rect_to_ldtk(2085, 294, 2185, 300), [], "act4a_spike_over_r")
+    # Branching Fork Hub (2510 .. 2650, y=140) with Foundry Spring Launcher to High Route!
+    add_entity("SolidBlock", bevy_rect_to_ldtk(2510, 116, 3230, 140), [], "s4_low_catwalk")
+    add_entity(
+        "JumpPad",
+        bevy_rect_to_ldtk(2550, 140, 2592, 150),
+        [field_inst("launch_vy", "Float", 600.0, 615)],
+        "s4_spring_high_branch",
+    )
+
+    # --- HIGH SPEEDRUNNER SKY-ROUTE (y = 286 .. 365) ---
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(2620, 286, 2830, 292), [], "s4_high_beam_1")
+    add_core(2675, 314, "s4_core_high1")
+    add_entity(
+        "TimedHazardBeam",
+        bevy_rect_to_ldtk(2745, 292, 2765, 382),
+        [field_inst("phase", "Float", 0.0, 650)],
+        "s4_high_vent_1",
+    )
+    add_entity("SolidBlock", bevy_rect_to_ldtk(2865, 276, 3140, 296), [], "s4_high_vault_deck")
+    add_entity(
+        "BreakableWall",
+        bevy_rect_to_ldtk(3005, 296, 3030, 366),
+        [field_inst("hp", "Float", 24.0, 640)],
+        "s4_high_breakable_wall",
+    )
+    add_relic(3082, 326, "s4_secret_relic_2")
+    add_core(3115, 324, "s4_core_high2")
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(3175, 286, 3365, 292), [], "s4_high_beam_3")
+    add_entity(
+        "TimedHazardBeam",
+        bevy_rect_to_ldtk(3255, 292, 3275, 382),
+        [field_inst("phase", "Float", 1.7, 650)],
+        "s4_high_vent_2",
+    )
+
+    # --- LOW COMBAT CATWALK (2650 .. 3230, y=140) ---
+    add_entity("SpikeHazard", bevy_rect_to_ldtk(2720, 140, 2824, 152), [], "s4_low_spikes")
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(2735, 196, 2810, 202), [], "s4_low_spike_hop")
+    add_core(2772, 222, "s4_core_low1")
     add_entity(
         "EnemySpawn",
-        bevy_point_to_ldtk(2135, 322, 24),
-        [field_inst("archetype", "String", "mage", 540)],
-        "act4a_catwalk_mage",
+        bevy_point_to_ldtk(2935, 164, 24),
+        [field_inst("archetype", "String", "heavy", 540)],
+        "s4_low_brawler",
     )
-    add_entity("SolidBlock", bevy_rect_to_ldtk(2236, 220, 2260, 300), [], "act4a_turret_pillar")
     add_entity(
-        "WallTurret",
-        bevy_point_to_ldtk(2226, 264, 20),
-        [field_inst("facing", "Float", -1.0, 530)],
-        "act4a_turret_catwalk",
+        "EnemySpawn",
+        bevy_point_to_ldtk(3120, 164, 24),
+        [field_inst("archetype", "String", "mage", 540)],
+        "s4_low_mage",
     )
+    # Uphill Rejoin Slope (3230,140 -> 3410,220) onto Rejoin Hub (3410 .. 3660, y=220)
+    add_slope(3230, 140, 3410, 220, "s4_rejoin_slope")
+    add_entity("SolidBlock", bevy_rect_to_ldtk(3410, 196, 3660, 220), [], "s4_rejoin_deck")
+    add_checkpoint(3, 3505, 220, "s4_checkpoint_3")
+    add_heal(3570, 242, "s4_rejoin_heal")
 
-    # 3. Horizontal Moving Sky-Bridge across Deep Foundry Abyss (2260..2580)
+    # =========================================================================
+    # SECTOR 5 — SKY-GONDOLA ABYSS & TIMED MAGMA BRIDGE (3660 .. 5280)
+    # =========================================================================
+    # Twin Synchronized Moving Gondolas crossing the Deep Foundry Abyss (3660 .. 4250)!
     add_entity(
         "MovingPlatform",
-        bevy_rect_to_ldtk(2385, 230, 2465, 236),
+        bevy_rect_to_ldtk(3730, 222, 3814, 228),
+        [
+            field_inst("travel_x", "Float", 104.0, 520),
+            field_inst("travel_y", "Float", 0.0, 521),
+            field_inst("speed", "Float", 1.45, 522),
+        ],
+        "s5_gondola_1",
+    )
+    add_core(3825, 260, "s5_core_gondola1")
+    add_entity("SolidBlock", bevy_rect_to_ldtk(3910, 196, 4020, 220), [], "s5_mid_abyss_pillar")
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(3915, 294, 4015, 300), [], "s5_mid_pillar_high")
+    add_core(3965, 322, "s5_core_mid_pillar")
+    add_entity(
+        "EnemySpawn",
+        bevy_point_to_ldtk(3965, 244, 24),
+        [field_inst("archetype", "String", "mage", 540)],
+        "s5_pillar_mage",
+    )
+    add_entity(
+        "MovingPlatform",
+        bevy_rect_to_ldtk(4085, 222, 4169, 228),
         [
             field_inst("travel_x", "Float", 102.0, 520),
             field_inst("travel_y", "Float", 0.0, 521),
             field_inst("speed", "Float", 1.55, 522),
         ],
-        "act4a_moving_skybridge",
+        "s5_gondola_2",
     )
-    add_entity("OneWayPlatform", bevy_rect_to_ldtk(2375, 312, 2475, 318), [], "act4a_abyss_high_plat")
-    add_entity("SolidBlock", bevy_rect_to_ldtk(2580, 196, 2956, 220), [], "act4a_chimney_base")
+    add_core(4180, 260, "s5_core_gondola2")
+
+    # Timed Magma-Vent Bridge (4250 .. 4870, y=220) — 3 staggered pulsing vents!
+    add_entity("SolidBlock", bevy_rect_to_ldtk(4250, 196, 4870, 220), [], "s5_vent_bridge")
+    add_entity(
+        "TimedHazardBeam",
+        bevy_rect_to_ldtk(4370, 220, 4392, 325),
+        [field_inst("phase", "Float", 0.0, 650)],
+        "s5_vent_1",
+    )
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(4420, 286, 4490, 292), [], "s5_vent_perch_1")
+    add_entity(
+        "TimedHazardBeam",
+        bevy_rect_to_ldtk(4525, 220, 4547, 325),
+        [field_inst("phase", "Float", 1.1, 650)],
+        "s5_vent_2",
+    )
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(4575, 286, 4645, 292), [], "s5_vent_perch_2")
+    add_core(4610, 314, "s5_core_vent_perch")
+    add_entity(
+        "TimedHazardBeam",
+        bevy_rect_to_ldtk(4675, 220, 4697, 325),
+        [field_inst("phase", "Float", 2.2, 650)],
+        "s5_vent_3",
+    )
     add_entity(
         "EnemySpawn",
-        bevy_point_to_ldtk(2665, 242, 24),
+        bevy_point_to_ldtk(4760, 244, 24),
         [field_inst("archetype", "String", "assassin", 540)],
-        "act4a_landing_assassin",
+        "s5_bridge_assassin",
+    )
+    # Foundry Spring Launcher -> Elevated Sky Foundry Deck (4900 .. 5506, y=340)!
+    add_entity(
+        "JumpPad",
+        bevy_rect_to_ldtk(4815, 220, 4857, 230),
+        [field_inst("launch_vy", "Float", 615.0, 615)],
+        "s5_spring_ascent",
+    )
+    add_core(4865, 345, "s5_core_spring_arc")
+    add_entity("SolidBlock", bevy_rect_to_ldtk(4900, 316, 5506, 340), [], "s5_sky_foundry_deck")
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(5015, 404, 5135, 410), [], "s5_sky_perch")
+    add_entity(
+        "EnemySpawn",
+        bevy_point_to_ldtk(5045, 364, 24),
+        [field_inst("archetype", "String", "light", 540)],
+        "s5_sky_rogue",
+    )
+    add_entity(
+        "EnemySpawn",
+        bevy_point_to_ldtk(5185, 364, 24),
+        [field_inst("archetype", "String", "heavy", 540)],
+        "s5_sky_brawler",
     )
 
-    # 4. Mini Wall-Jump Chimney & Drop-Through Switchback Climb (2800..3180)
-    add_entity("SolidBlock", bevy_rect_to_ldtk(2800, 308, 2826, 440), [], "act4a_chimney_wall_l")
-    add_entity("SolidBlock", bevy_rect_to_ldtk(2930, 220, 2956, 340), [], "act4a_chimney_wall_r")
-    add_entity("OneWayPlatform", bevy_rect_to_ldtk(2836, 276, 2916, 282), [], "act4a_chimney_step1")
-    add_entity("OneWayPlatform", bevy_rect_to_ldtk(2844, 336, 2924, 342), [], "act4a_chimney_step2")
+    # =========================================================================
+    # SECTOR 6 — FOUNDRY CONVEYOR TOWER & HIDDEN FOREMAN'S VAULT (5280 .. 6780)
+    # =========================================================================
+    add_entity("SolidBlock", bevy_rect_to_ldtk(5280, 422, 5306, 584), [], "s6_tower_wall_l")
+    add_entity("SolidBlock", bevy_rect_to_ldtk(5480, 340, 5506, 500), [], "s6_tower_wall_r")
+    add_entity("SpikeHazard", bevy_rect_to_ldtk(5436, 340, 5478, 352), [], "s6_tower_spike")
+    add_entity(
+        "MovingPlatform",
+        bevy_rect_to_ldtk(5356, 396, 5424, 402),
+        [
+            field_inst("travel_x", "Float", 0.0, 520),
+            field_inst("travel_y", "Float", 84.0, 521),
+            field_inst("speed", "Float", 1.70, 522),
+        ],
+        "s6_tower_lift",
+    )
     add_entity(
         "WallTurret",
-        bevy_point_to_ldtk(2920, 296, 20),
+        bevy_point_to_ldtk(5470, 392, 20),
         [field_inst("facing", "Float", -1.0, 530)],
-        "act4a_turret_chimney",
+        "s6_tower_turret_low",
     )
-    # Upper Chimney Catwalk (2930..3180, y=340) guarded by isolated Iron Brawler!
-    add_entity("SolidBlock", bevy_rect_to_ldtk(2930, 316, 3180, 340), [], "act4a_upper_catwalk")
+    add_entity(
+        "WallTurret",
+        bevy_point_to_ldtk(5316, 468, 20),
+        [field_inst("facing", "Float", 1.0, 530)],
+        "s6_tower_turret_high",
+    )
+    # Summit Bridge (5480 .. 5720, y=500) + Left Hidden Foreman's Vault (5060 .. 5280, y=500)!
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(5312, 496, 5476, 502), [], "s6_summit_bridge")
+    add_entity("SolidBlock", bevy_rect_to_ldtk(5040, 476, 5280, 500), [], "s6_secret_vault_floor")
+    add_entity(
+        "BreakableWall",
+        bevy_rect_to_ldtk(5254, 500, 5280, 576),
+        [field_inst("hp", "Float", 26.0, 640)],
+        "s6_vault_breakable_door",
+    )
+    add_relic(5115, 528, "s6_secret_relic_3")
+    add_heal(5175, 524, "s6_vault_heal")
+    add_core(5215, 524, "s6_core_vault")
+
+    # Stepped Descent Cascade (5480 .. 6780, y = 500 -> 400 -> 310 -> 220)
+    add_entity("SolidBlock", bevy_rect_to_ldtk(5480, 476, 5700, 500), [], "s6_summit_exit")
+    add_core(5610, 528, "s6_core_summit")
+    add_entity("SolidBlock", bevy_rect_to_ldtk(5720, 376, 5980, 400), [], "s6_cascade_tier1")
     add_entity(
         "EnemySpawn",
-        bevy_point_to_ldtk(3065, 362, 24),
-        [field_inst("archetype", "String", "heavy", 540)],
-        "act4a_upper_brawler",
+        bevy_point_to_ldtk(5860, 424, 24),
+        [field_inst("archetype", "String", "light", 540)],
+        "s6_cascade_rogue",
     )
-    # Descending Stepped Run-Up into Forge Gauntlet (3180..3320)
-    add_entity("OneWayPlatform", bevy_rect_to_ldtk(3195, 280, 3290, 286), [], "act4a_descent_step")
-    add_entity("SolidBlock", bevy_rect_to_ldtk(3160, 196, 3320, 220), [], "act4a_gauntlet_entry")
+    add_entity("SolidBlock", bevy_rect_to_ldtk(6010, 286, 6300, 310), [], "s6_cascade_tier2")
+    add_core(6090, 342, "s6_core_cascade1")
+    add_entity(
+        "EnemySpawn",
+        bevy_point_to_ldtk(6175, 334, 24),
+        [field_inst("archetype", "String", "assassin", 540)],
+        "s6_cascade_assassin",
+    )
+    add_entity("SolidBlock", bevy_rect_to_ldtk(6330, 196, 6780, 220), [], "s6_cascade_base")
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(6415, 286, 6525, 292), [], "s6_base_perch")
+    add_core(6470, 314, "s6_core_cascade2")
+    add_entity(
+        "EnemySpawn",
+        bevy_point_to_ldtk(6470, 244, 24),
+        [field_inst("archetype", "String", "mage", 540)],
+        "s6_base_mage",
+    )
+    add_checkpoint(4, 6665, 220, "s6_checkpoint_4")
+    add_heal(6725, 242, "s6_pre_crucible_heal")
 
     # =========================================================================
-    # ACT 4B — TIGHTER LOCKDOWN AMBUSH #2: "FORGE GAUNTLET" (3320 .. 3920)
-    #          (1 high-intensity elite ambush wave -> full 0% heal!)
+    # SECTOR 7 — LOCKDOWN ARENA #2: "THE REACTOR CRUCIBLE" (6780 .. 7440)
     # =========================================================================
-    add_entity("SolidBlock", bevy_rect_to_ldtk(3320, 196, 3920, 220), [], "act4b_gauntlet_deck")
-    add_entity("OneWayPlatform", bevy_rect_to_ldtk(3380, 284, 3485, 290), [], "act4b_plat_bl")
-    add_entity("OneWayPlatform", bevy_rect_to_ldtk(3755, 284, 3860, 290), [], "act4b_plat_br")
-    add_entity("OneWayPlatform", bevy_rect_to_ldtk(3500, 348, 3605, 354), [], "act4b_plat_tl")
-    add_entity("OneWayPlatform", bevy_rect_to_ldtk(3635, 348, 3740, 354), [], "act4b_plat_tr")
+    add_entity("SolidBlock", bevy_rect_to_ldtk(6780, 196, 7440, 220), [], "s7_crucible_deck")
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(6860, 288, 6970, 294), [], "s7_plat_bl")
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(7250, 288, 7360, 294), [], "s7_plat_br")
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(6975, 356, 7090, 362), [], "s7_plat_tl")
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(7130, 356, 7245, 362), [], "s7_plat_tr")
+    # Twin Corner Foundry Spring Launchers for high-flying aerial Smash combos!
+    add_entity(
+        "JumpPad",
+        bevy_rect_to_ldtk(6808, 220, 6846, 230),
+        [field_inst("launch_vy", "Float", 560.0, 615)],
+        "s7_spring_left",
+    )
+    add_entity(
+        "JumpPad",
+        bevy_rect_to_ldtk(7374, 220, 7412, 230),
+        [field_inst("launch_vy", "Float", 560.0, 615)],
+        "s7_spring_right",
+    )
     add_entity(
         "EncounterZone",
-        bevy_rect_to_ldtk(3320, 220, 3920, 500),
+        bevy_rect_to_ldtk(6780, 220, 7440, 540),
         [
             field_inst("encounter_id", "Int", 2, 600),
-            field_inst("title", "String", "FORGE GAUNTLET", 601),
-            field_inst("preset", "String", "forge_gauntlet", 602),
-            field_inst("trigger_x", "Float", 3420.0, 603),
+            field_inst("title", "String", "THE REACTOR CRUCIBLE", 601),
+            field_inst("preset", "String", "reactor_crucible", 602),
+            field_inst("trigger_x", "Float", 6880.0, 603),
             field_inst("floor_y", "Float", 220.0, 604),
         ],
-        "act4b_encounter_gauntlet",
+        "s7_encounter_crucible",
     )
 
     # =========================================================================
-    # ACT 5A — PRE-BOSS GAUNTLET HALLWAY (3920 .. 4460)
+    # SECTOR 8A — THE CITADEL APPROACH (7440 .. 8520)
     # =========================================================================
-    add_entity("SolidBlock", bevy_rect_to_ldtk(3920, 196, 4065, 220), [], "act5a_exit_deck")
-    # Short Foundry Vent Gap (4065..4145) -> Vanguard Bridge (4145..4460)
-    add_entity("SolidBlock", bevy_rect_to_ldtk(4145, 196, 4460, 220), [], "act5a_boss_corridor")
-    add_entity("OneWayPlatform", bevy_rect_to_ldtk(4195, 284, 4295, 290), [], "act5a_vanguard_plat")
+    add_entity("SolidBlock", bevy_rect_to_ldtk(7440, 196, 7900, 220), [], "s8a_boost_runway")
+    add_entity(
+        "BoostPad",
+        bevy_rect_to_ldtk(7750, 220, 7845, 232),
+        [
+            field_inst("target_speed", "Float", 510.0, 510),
+            field_inst("dir_x", "Float", 1.0, 511),
+        ],
+        "s8a_boost_pad",
+    )
+    # Reactor Trench (7900 .. 8050) with glowing Energy Core arc & mid safety beam
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(7938, 254, 8012, 260), [], "s8a_trench_safety")
+    add_core(7935, 294, "s8a_core_trench1")
+    add_core(7975, 306, "s8a_core_trench2")
+    add_core(8015, 294, "s8a_core_trench3")
+
+    # Citadel Vanguard Bridge (8050 .. 8520, y=220)
+    add_entity("SolidBlock", bevy_rect_to_ldtk(8050, 196, 8520, 220), [], "s8a_vanguard_bridge")
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(8115, 286, 8225, 292), [], "s8a_vanguard_plat")
     add_entity(
         "EnemySpawn",
-        bevy_point_to_ldtk(4225, 242, 24),
+        bevy_point_to_ldtk(8165, 244, 24),
         [field_inst("archetype", "String", "light", 540)],
-        "act5a_vanguard_rogue",
+        "s8a_vanguard_rogue",
     )
     add_entity(
         "WallTurret",
-        bevy_point_to_ldtk(4305, 288, 20),
+        bevy_point_to_ldtk(8265, 288, 20),
         [field_inst("facing", "Float", -1.0, 530)],
-        "act5a_turret_gatekeeper",
+        "s8a_turret_gatekeeper",
     )
+    add_checkpoint(5, 8365, 220, "s8a_checkpoint_5")
+    add_heal(8430, 242, "s8a_pre_boss_heal")
 
     # =========================================================================
-    # ACT 5B — BOSS SANCTUM: "IRON TITAN: VULCANUS" (4460 .. 5100)
+    # SECTOR 8B — BOSS SANCTUM: "IRON TITAN: VULCANUS" (8520 .. 9220)
     # =========================================================================
-    add_entity("SolidBlock", bevy_rect_to_ldtk(4460, 196, 5100, 220), [], "act5b_boss_deck")
-    add_entity("SolidBlock", bevy_rect_to_ldtk(5100, 196, 5140, 580), [], "act5b_citadel_backwall")
-    # 3 Strategic Smash Platforms for dodging Vulcanus's Tremor Waves & Telegraphed Phase 2 Lasers!
-    add_entity("OneWayPlatform", bevy_rect_to_ldtk(4545, 288, 4655, 294), [], "act5b_boss_plat_l")
-    add_entity("OneWayPlatform", bevy_rect_to_ldtk(4905, 288, 5015, 294), [], "act5b_boss_plat_r")
-    add_entity("OneWayPlatform", bevy_rect_to_ldtk(4720, 354, 4840, 360), [], "act5b_boss_plat_top")
+    add_entity("SolidBlock", bevy_rect_to_ldtk(8520, 196, 9220, 220), [], "s8b_boss_deck")
+    add_entity("SolidBlock", bevy_rect_to_ldtk(9220, 196, 9268, 620), [], "s8b_citadel_backwall")
+    # 3 Strategic Smash Platforms + 2 Corner Spring Launchers for Vulcanus's 2-Phase Showdown!
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(8615, 292, 8725, 298), [], "s8b_boss_plat_l")
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(9015, 292, 9125, 298), [], "s8b_boss_plat_r")
+    add_entity("OneWayPlatform", bevy_rect_to_ldtk(8805, 360, 8935, 366), [], "s8b_boss_plat_top")
+    add_entity(
+        "JumpPad",
+        bevy_rect_to_ldtk(8552, 220, 8590, 230),
+        [field_inst("launch_vy", "Float", 540.0, 615)],
+        "s8b_boss_spring_l",
+    )
+    add_entity(
+        "JumpPad",
+        bevy_rect_to_ldtk(9150, 220, 9188, 230),
+        [field_inst("launch_vy", "Float", 540.0, 615)],
+        "s8b_boss_spring_r",
+    )
 
     add_entity(
         "BossSpawn",
-        bevy_point_to_ldtk(4960, 254, 32),
+        bevy_point_to_ldtk(9060, 254, 32),
         [field_inst("boss_id", "String", "vulcanus", 610)],
-        "act5b_boss_vulcanus",
+        "s8b_boss_vulcanus",
     )
     add_entity(
         "EncounterZone",
-        bevy_rect_to_ldtk(4460, 220, 5100, 540),
+        bevy_rect_to_ldtk(8520, 220, 9220, 560),
         [
             field_inst("encounter_id", "Int", 3, 600),
             field_inst("title", "String", "IRON TITAN: VULCANUS", 601),
             field_inst("preset", "String", "vulcanus_boss", 602),
-            field_inst("trigger_x", "Float", 4545.0, 603),
+            field_inst("trigger_x", "Float", 8605.0, 603),
             field_inst("floor_y", "Float", 220.0, 604),
         ],
-        "act5b_encounter_boss",
+        "s8b_encounter_boss",
     )
 
-    # Full-stage BlastZone framing chasms & upper ceiling safely
+    # Full-stage BlastZone framing all 8 Sectors cleanly
     add_entity(
         "BlastZone",
-        bevy_rect_to_ldtk(-360, -180, 5200, 680),
+        bevy_rect_to_ldtk(-360, -180, 9340, 690),
         [
-            field_inst("arena_center_x", "Float", 1150.0, 550),
-            field_inst("arena_center_y", "Float", 310.0, 551),
+            field_inst("arena_center_x", "Float", 1420.0, 550),
+            field_inst("arena_center_y", "Float", 312.0, 551),
         ],
         "stage_blast_zone",
     )
@@ -548,7 +825,7 @@ def main() -> None:
     data = build_demo_gym()
     out.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     ents = data["levels"][0]["layerInstances"][0]["entityInstances"]
-    print(f"[generate_demo_gym_ldtk] wrote {out} ({len(ents)} entities across expanded 5-Act Stage 1)")
+    print(f"[generate_demo_gym_ldtk] wrote {out} ({len(ents)} entities across full 8-Sector Stage 1!)")
 
 
 if __name__ == "__main__":

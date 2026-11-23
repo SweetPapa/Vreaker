@@ -30,8 +30,10 @@ use crate::enemies::{
     EnemyArchetype, EnemyFighter, EnemyHealth, LockdownGate, TurretProjectile, WallTurret,
 };
 use crate::physics::{
-    BoostPad, KinematicBody, LoopSpline, MovementEvent, MovementFxKind, MovementState,
+    BoostPad, BreakableWall, CheckpointBeacon, CollectibleItem, CollectibleKind, HazardBeamPhase,
+    JumpPad, KinematicBody, LoopSpline, MovementEvent, MovementFxKind, MovementState,
     MovingPlatform, OneWayPlatform, PhysicsConfig, SlopeSegment, SolidRect, SpikeHazard,
+    TimedHazardBeam,
 };
 use crate::player::{
     Player, PlayerFeetPivot, PlayerP1Marker, PlayerRespawnState, PlayerSpawnPoint,
@@ -258,6 +260,32 @@ struct BossSightlineFx {
     length: f32,
 }
 
+/// Child visual orb on a [`CheckpointBeacon`] pylon (amber idle -> blazing cyan active!).
+#[derive(Component, Debug)]
+struct CheckpointBeaconVisual {
+    owner: Entity,
+}
+
+/// Child visual beam column on a [`TimedHazardBeam`] magma/laser emitter.
+#[derive(Component, Debug)]
+struct TimedBeamColumnVisual {
+    owner: Entity,
+    size: Vec2,
+}
+
+/// Child visual glowing crack overlay on a [`BreakableWall`].
+#[derive(Component, Debug)]
+struct BreakableWallCrackVisual {
+    owner: Entity,
+}
+
+/// Ambient rising Foundry ember spawner timer for living atmosphere across all 8 sectors.
+#[derive(Resource, Debug, Default)]
+struct AmbientEmberTimer {
+    timer: f32,
+    seed: u32,
+}
+
 /// Tracks the last started melee move on the visual animator so combo hits restart cleanly.
 #[derive(Resource, Debug, Default)]
 struct LastVisualAttack {
@@ -278,6 +306,7 @@ impl Plugin for RenderingPlugin {
             .init_resource::<LastVisualAttack>()
             .init_resource::<AfterimageSpawner>()
             .init_resource::<SmokeTrailTimer>()
+            .init_resource::<AmbientEmberTimer>()
             .add_systems(
                 Startup,
                 (
@@ -296,6 +325,11 @@ impl Plugin for RenderingPlugin {
                     decorate_added_slopes,
                     decorate_added_one_ways,
                     decorate_added_boost_pads,
+                    decorate_added_jump_pads,
+                    decorate_added_checkpoint_beacons,
+                    decorate_added_collectibles,
+                    decorate_added_breakable_walls,
+                    decorate_added_timed_hazard_beams,
                     decorate_added_loop_splines,
                     decorate_added_spike_hazards,
                     decorate_added_wall_turrets,
@@ -309,25 +343,33 @@ impl Plugin for RenderingPlugin {
             .add_systems(
                 Update,
                 (
-                    sync_canvas_integer_scale,
-                    drive_player_visuals_and_animations,
-                    spawn_and_fade_speed_afterimages,
-                    update_buster_charge_aura,
-                    update_shield_bubble_visual,
-                    update_respawn_angel_platform_and_p1_marker,
-                    drive_enemy_fighter_visuals,
-                    update_enemy_health_bars,
-                    update_wall_turret_visuals,
-                    handle_combat_hit_and_shot_fx,
-                    handle_combat_visual_events,
-                    spawn_movement_particles,
-                    spawn_knockback_smoke_trails,
-                    handle_blast_zone_ko_flash,
-                    update_hit_sparks_and_ko_beams,
-                    update_slash_and_shockwave_fx,
-                    update_follow_camera,
-                    update_parallax_backdrop,
-                    animate_hero_companion_light,
+                    (
+                        sync_canvas_integer_scale,
+                        drive_player_visuals_and_animations,
+                        spawn_and_fade_speed_afterimages,
+                        update_buster_charge_aura,
+                        update_shield_bubble_visual,
+                        update_respawn_angel_platform_and_p1_marker,
+                        drive_enemy_fighter_visuals,
+                        update_enemy_health_bars,
+                        update_wall_turret_visuals,
+                        update_stage_feature_visuals,
+                        spawn_ambient_foundry_embers,
+                    )
+                        .chain(),
+                    (
+                        handle_combat_hit_and_shot_fx,
+                        handle_combat_visual_events,
+                        spawn_movement_particles,
+                        spawn_knockback_smoke_trails,
+                        handle_blast_zone_ko_flash,
+                        update_hit_sparks_and_ko_beams,
+                        update_slash_and_shockwave_fx,
+                        update_follow_camera,
+                        update_parallax_backdrop,
+                        animate_hero_companion_light,
+                    )
+                        .chain(),
                 )
                     .chain(),
             )
@@ -879,7 +921,10 @@ fn decorate_added_player(
 fn decorate_added_solids(
     mut commands: Commands,
     foundry: Res<FoundryArtAssets>,
-    added: Query<(Entity, &SolidRect), (Added<SolidRect>, Without<LockdownGate>)>,
+    added: Query<
+        (Entity, &SolidRect),
+        (Added<SolidRect>, Without<LockdownGate>, Without<BreakableWall>),
+    >,
 ) {
     let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
     for (entity, rect) in &added {
@@ -1106,6 +1151,286 @@ fn decorate_added_boost_pads(
             Transform::from_xyz(pad.center.x, pad.center.y - pad.half_extents.y + 2.0, -3.0),
             world_layer.clone(),
         ));
+    }
+}
+
+fn decorate_added_jump_pads(mut commands: Commands, added: Query<(Entity, &JumpPad), Added<JumpPad>>) {
+    let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
+    for (entity, pad) in &added {
+        let size = pad.half_extents * 2.0;
+        commands
+            .entity(entity)
+            .insert((
+                Sprite {
+                    color: Color::srgb(0.22, 0.25, 0.34),
+                    custom_size: Some(Vec2::new(size.x, size.y.max(8.0))),
+                    ..default()
+                },
+                PointLight2d {
+                    color: LinearRgba::new(1.0, 0.72, 0.16, 1.0),
+                    intensity: 2.0,
+                    radius: 145.0,
+                    height: 22.0,
+                    falloff: 1.5,
+                },
+                Transform::from_xyz(pad.center.x, pad.center.y, -3.0),
+                world_layer.clone(),
+            ))
+            .with_children(|parent| {
+                // Glowing amber-cyan pneumatic bounce plate
+                parent.spawn((
+                    Sprite {
+                        color: Color::linear_rgb(4.6, 3.0, 0.45),
+                        custom_size: Some(Vec2::new(size.x - 4.0, 4.0)),
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, pad.half_extents.y, 0.2),
+                    world_layer.clone(),
+                ));
+                // Upward neon chevron indicator
+                parent.spawn((
+                    Sprite {
+                        color: Color::linear_rgb(0.35, 3.8, 5.2),
+                        custom_size: Some(Vec2::new(10.0, 3.0)),
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, pad.half_extents.y + 6.0, 0.3),
+                    world_layer.clone(),
+                ));
+            });
+    }
+}
+
+fn decorate_added_checkpoint_beacons(
+    mut commands: Commands,
+    added: Query<(Entity, &CheckpointBeacon), Added<CheckpointBeacon>>,
+) {
+    let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
+    for (entity, _beacon) in &added {
+        commands.entity(entity).with_children(|parent| {
+            // Armored steel pylon pedestal
+            parent.spawn((
+                Sprite {
+                    color: Color::srgb(0.22, 0.27, 0.36),
+                    custom_size: Some(Vec2::new(12.0, 32.0)),
+                    ..default()
+                },
+                Transform::from_xyz(0.0, 16.0, 0.0),
+                world_layer.clone(),
+            ));
+            // Glowing beacon emitter crystal (dim amber -> blazing electric cyan when activated!)
+            parent.spawn((
+                CheckpointBeaconVisual { owner: entity },
+                Sprite {
+                    color: Color::linear_rgb(2.2, 1.1, 0.3),
+                    custom_size: Some(Vec2::new(10.0, 12.0)),
+                    ..default()
+                },
+                PointLight2d {
+                    color: LinearRgba::new(1.0, 0.55, 0.18, 1.0),
+                    intensity: 1.4,
+                    radius: 135.0,
+                    height: 24.0,
+                    falloff: 1.5,
+                },
+                Transform::from_xyz(0.0, 36.0, 0.4)
+                    .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_4)),
+                world_layer.clone(),
+            ));
+        });
+    }
+}
+
+fn decorate_added_collectibles(
+    mut commands: Commands,
+    added: Query<(Entity, &CollectibleItem), Added<CollectibleItem>>,
+) {
+    let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
+    for (entity, item) in &added {
+        match item.kind {
+            CollectibleKind::EnergyCore => {
+                commands
+                    .entity(entity)
+                    .insert((
+                        Sprite {
+                            color: Color::linear_rgb(0.35, 3.8, 5.2),
+                            custom_size: Some(Vec2::new(9.0, 9.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(item.pos.x, item.pos.y, 1.2)
+                            .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_4)),
+                        world_layer.clone(),
+                    ))
+                    .with_children(|p| {
+                        p.spawn((
+                            Sprite {
+                                color: Color::linear_rgb(4.6, 5.0, 5.4),
+                                custom_size: Some(Vec2::new(4.0, 4.0)),
+                                ..default()
+                            },
+                            Transform::from_xyz(0.0, 0.0, 0.2),
+                            world_layer.clone(),
+                        ));
+                    });
+            }
+            CollectibleKind::SecretRelic => {
+                commands
+                    .entity(entity)
+                    .insert((
+                        Sprite {
+                            color: Color::linear_rgb(5.2, 3.6, 0.55),
+                            custom_size: Some(Vec2::new(15.0, 15.0)),
+                            ..default()
+                        },
+                        PointLight2d {
+                            color: LinearRgba::new(1.0, 0.78, 0.22, 1.0),
+                            intensity: 2.8,
+                            radius: 155.0,
+                            height: 24.0,
+                            falloff: 1.4,
+                        },
+                        Transform::from_xyz(item.pos.x, item.pos.y, 1.5)
+                            .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_4)),
+                        world_layer.clone(),
+                    ))
+                    .with_children(|p| {
+                        p.spawn((
+                            Sprite {
+                                color: Color::linear_rgb(5.6, 5.2, 2.4),
+                                custom_size: Some(Vec2::new(7.0, 7.0)),
+                                ..default()
+                            },
+                            Transform::from_xyz(0.0, 0.0, 0.2),
+                            world_layer.clone(),
+                        ));
+                    });
+            }
+            CollectibleKind::HealCanister => {
+                commands
+                    .entity(entity)
+                    .insert((
+                        Sprite {
+                            color: Color::linear_rgb(0.35, 4.4, 1.8),
+                            custom_size: Some(Vec2::new(12.0, 16.0)),
+                            ..default()
+                        },
+                        PointLight2d {
+                            color: LinearRgba::new(0.25, 1.0, 0.50, 1.0),
+                            intensity: 2.0,
+                            radius: 130.0,
+                            height: 20.0,
+                            falloff: 1.5,
+                        },
+                        Transform::from_xyz(item.pos.x, item.pos.y, 1.3),
+                        world_layer.clone(),
+                    ))
+                    .with_children(|p| {
+                        p.spawn((
+                            Sprite {
+                                color: Color::linear_rgb(4.4, 5.4, 4.6),
+                                custom_size: Some(Vec2::new(8.0, 3.0)),
+                                ..default()
+                            },
+                            Transform::from_xyz(0.0, 0.0, 0.2),
+                            world_layer.clone(),
+                        ));
+                        p.spawn((
+                            Sprite {
+                                color: Color::linear_rgb(4.4, 5.4, 4.6),
+                                custom_size: Some(Vec2::new(3.0, 8.0)),
+                                ..default()
+                            },
+                            Transform::from_xyz(0.0, 0.0, 0.2),
+                            world_layer.clone(),
+                        ));
+                    });
+            }
+        }
+    }
+}
+
+fn decorate_added_breakable_walls(
+    mut commands: Commands,
+    added: Query<(Entity, &BreakableWall), Added<BreakableWall>>,
+) {
+    let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
+    for (entity, wall) in &added {
+        commands
+            .entity(entity)
+            .insert((
+                Sprite {
+                    color: Color::srgb(0.32, 0.20, 0.16),
+                    custom_size: Some(wall.size),
+                    ..default()
+                },
+                PointLight2d {
+                    color: LinearRgba::new(1.0, 0.45, 0.14, 1.0),
+                    intensity: 1.6,
+                    radius: 120.0,
+                    height: 20.0,
+                    falloff: 1.5,
+                },
+                world_layer.clone(),
+            ))
+            .with_children(|parent| {
+                // Glowing molten diagonal fracture seams signaling SMASHABLE bulkhead!
+                for (y_off, rot) in [(-14.0, 0.48_f32), (0.0, -0.52), (14.0, 0.42)] {
+                    parent.spawn((
+                        BreakableWallCrackVisual { owner: entity },
+                        Sprite {
+                            color: Color::linear_rgb(4.8, 2.0, 0.35),
+                            custom_size: Some(Vec2::new(wall.size.x * 0.92, 3.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(0.0, y_off, 0.3)
+                            .with_rotation(Quat::from_rotation_z(rot)),
+                        world_layer.clone(),
+                    ));
+                }
+            });
+    }
+}
+
+fn decorate_added_timed_hazard_beams(
+    mut commands: Commands,
+    added: Query<(Entity, &TimedHazardBeam), Added<TimedHazardBeam>>,
+) {
+    let world_layer = RenderLayers::layer(WORLD_RENDER_LAYER);
+    for (entity, beam) in &added {
+        let size = beam.half_extents * 2.0;
+        commands.entity(entity).with_children(|parent| {
+            // Base vent emitter nozzle anchored at the floor
+            parent.spawn((
+                Sprite {
+                    color: Color::srgb(0.32, 0.24, 0.30),
+                    custom_size: Some(Vec2::new(size.x + 8.0, 8.0)),
+                    ..default()
+                },
+                Transform::from_xyz(0.0, -beam.half_extents.y + 4.0, 0.1),
+                world_layer.clone(),
+            ));
+            // Dynamic vertical plasma/magma beam column (updates per phase!)
+            parent.spawn((
+                TimedBeamColumnVisual {
+                    owner: entity,
+                    size,
+                },
+                Sprite {
+                    color: Color::linear_rgba(0.0, 0.0, 0.0, 0.0),
+                    custom_size: Some(size),
+                    ..default()
+                },
+                PointLight2d {
+                    color: LinearRgba::new(1.0, 0.28, 0.18, 1.0),
+                    intensity: 0.0,
+                    radius: 145.0,
+                    height: 22.0,
+                    falloff: 1.4,
+                },
+                Transform::from_xyz(0.0, 0.0, 0.3),
+                world_layer.clone(),
+            ));
+        });
     }
 }
 
@@ -2144,6 +2469,121 @@ fn spawn_movement_particles(
                     ));
                 }
             }
+            MovementFxKind::JumpPad => {
+                shake.add_impulse(0.24, Vec2::Y);
+                for i in 0..10 {
+                    let spread = ((i as f32 / 9.0) - 0.5) * 1.1;
+                    let a = std::f32::consts::FRAC_PI_2 + spread;
+                    commands.spawn((
+                        HitSpark {
+                            velocity: Vec2::new(a.cos(), a.sin()) * (170.0 + (i % 3) as f32 * 45.0),
+                            lifetime: 0.24,
+                            max_lifetime: 0.24,
+                        },
+                        Sprite {
+                            color: if i % 2 == 0 {
+                                Color::linear_rgb(5.0, 3.4, 0.5)
+                            } else {
+                                Color::linear_rgb(0.35, 4.0, 5.2)
+                            },
+                            custom_size: Some(Vec2::new(7.0, 3.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(ev.pos.x, ev.pos.y, 6.8)
+                            .with_rotation(Quat::from_rotation_z(a)),
+                        world_layer.clone(),
+                    ));
+                }
+            }
+            MovementFxKind::Checkpoint => {
+                for i in 0..12 {
+                    let a = (i as f32 / 12.0) * std::f32::consts::TAU;
+                    commands.spawn((
+                        HitSpark {
+                            velocity: Vec2::new(a.cos() * 110.0, 55.0 + a.sin() * 110.0),
+                            lifetime: 0.34,
+                            max_lifetime: 0.34,
+                        },
+                        Sprite {
+                            color: Color::linear_rgb(0.35, 4.4, 5.5),
+                            custom_size: Some(Vec2::new(5.0, 5.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(ev.pos.x, ev.pos.y, 7.2),
+                        world_layer.clone(),
+                    ));
+                }
+            }
+            MovementFxKind::CollectCore => {
+                for i in 0..6 {
+                    let a = (i as f32 / 6.0) * std::f32::consts::TAU;
+                    commands.spawn((
+                        HitSpark {
+                            velocity: Vec2::new(a.cos(), a.sin()) * 95.0,
+                            lifetime: 0.20,
+                            max_lifetime: 0.20,
+                        },
+                        Sprite {
+                            color: Color::linear_rgb(0.45, 4.2, 5.4),
+                            custom_size: Some(Vec2::new(4.0, 4.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(ev.pos.x, ev.pos.y, 7.0),
+                        world_layer.clone(),
+                    ));
+                }
+            }
+            MovementFxKind::CollectRelic | MovementFxKind::CollectHeal => {
+                let is_heal = ev.kind == MovementFxKind::CollectHeal;
+                for i in 0..14 {
+                    let a = (i as f32 / 14.0) * std::f32::consts::TAU;
+                    let col = if is_heal {
+                        Color::linear_rgb(0.4, 4.8, 2.2)
+                    } else {
+                        Color::linear_rgb(5.4, 4.2, 0.75)
+                    };
+                    commands.spawn((
+                        HitSpark {
+                            velocity: Vec2::new(a.cos(), a.sin()) * (140.0 + (i % 3) as f32 * 45.0),
+                            lifetime: 0.36,
+                            max_lifetime: 0.36,
+                        },
+                        Sprite {
+                            color: col,
+                            custom_size: Some(Vec2::new(6.0, 4.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(ev.pos.x, ev.pos.y, 7.4)
+                            .with_rotation(Quat::from_rotation_z(a)),
+                        world_layer.clone(),
+                    ));
+                }
+            }
+            MovementFxKind::WallBreak => {
+                shake.add_impulse(0.65, Vec2::X);
+                for i in 0..16 {
+                    let a = (i as f32 / 16.0) * std::f32::consts::TAU;
+                    let spd = 120.0 + (i % 4) as f32 * 65.0;
+                    commands.spawn((
+                        HitSpark {
+                            velocity: Vec2::new(a.cos() * spd, a.sin() * spd + 65.0),
+                            lifetime: 0.38,
+                            max_lifetime: 0.38,
+                        },
+                        Sprite {
+                            color: if i % 2 == 0 {
+                                Color::linear_rgb(5.2, 2.2, 0.35)
+                            } else {
+                                Color::srgb(0.42, 0.36, 0.32)
+                            },
+                            custom_size: Some(Vec2::new(6.0, 6.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(ev.pos.x, ev.pos.y, 7.6),
+                        world_layer.clone(),
+                    ));
+                }
+            }
             MovementFxKind::SpinDashRev => {
                 for i in 0..4 {
                     let back_x = ev.dir.x.signum();
@@ -2413,6 +2853,147 @@ fn update_enemy_health_bars(
             Color::linear_rgb(4.2, 1.4, 0.35)
         };
     }
+}
+
+/// Drives live visual feedback for Checkpoints, Collectibles, Breakable Walls, and Timed Hazard Beams!
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn update_stage_feature_visuals(
+    time: Res<Time>,
+    state: Res<State<AppState>>,
+    beacons: Query<&CheckpointBeacon>,
+    beams: Query<&TimedHazardBeam>,
+    walls: Query<&BreakableWall>,
+    mut beacon_vis: Query<
+        (&CheckpointBeaconVisual, &mut Sprite, &mut PointLight2d),
+        (Without<TimedBeamColumnVisual>, Without<BreakableWallCrackVisual>),
+    >,
+    mut beam_vis: Query<
+        (&TimedBeamColumnVisual, &mut Sprite, &mut PointLight2d),
+        (Without<CheckpointBeaconVisual>, Without<BreakableWallCrackVisual>),
+    >,
+    mut wall_cracks: Query<
+        (&BreakableWallCrackVisual, &mut Sprite),
+        (Without<CheckpointBeaconVisual>, Without<TimedBeamColumnVisual>),
+    >,
+    mut collectibles: Query<(&CollectibleItem, &mut Transform)>,
+) {
+    if *state.get() == AppState::Paused {
+        return;
+    }
+    let t = time.elapsed_secs();
+
+    // 1. Checkpoint Beacons: muted amber idle -> blazing pulsing electric cyan when activated!
+    for (vis, mut sprite, mut light) in &mut beacon_vis {
+        let Ok(beacon) = beacons.get(vis.owner) else {
+            continue;
+        };
+        if beacon.activated {
+            let pulse = 0.8 + 0.2 * (t * 8.0).sin();
+            sprite.color = Color::linear_rgb(0.35 * pulse, 4.4 * pulse, 5.5 * pulse);
+            light.color = LinearRgba::new(0.20, 0.92, 1.0, 1.0);
+            light.intensity = 2.6 * pulse;
+        } else {
+            sprite.color = Color::linear_rgb(2.0, 0.95, 0.25);
+            light.color = LinearRgba::new(1.0, 0.50, 0.16, 1.0);
+            light.intensity = 1.2;
+        }
+    }
+
+    // 2. Collectibles: silky floating bob & subtle spin
+    for (item, mut tf) in &mut collectibles {
+        let bob = (t * 4.2 + item.bob_phase).sin() * 3.5;
+        tf.translation.x = item.pos.x.round();
+        tf.translation.y = (item.pos.y + bob).round();
+        if item.kind != CollectibleKind::HealCanister {
+            tf.rotation = Quat::from_rotation_z(std::f32::consts::FRAC_PI_4 + (t * 1.6 + item.bob_phase).sin() * 0.22);
+        }
+    }
+
+    // 3. Timed Hazard Beams: invisible Off -> flashing amber Telegraph -> blazing crimson-gold Active!
+    let flash = 0.45 + 0.55 * (t * 34.0).sin();
+    for (vis, mut sprite, mut light) in &mut beam_vis {
+        let Ok(beam) = beams.get(vis.owner) else {
+            continue;
+        };
+        match beam.phase() {
+            HazardBeamPhase::Off => {
+                sprite.color = Color::linear_rgba(0.0, 0.0, 0.0, 0.0);
+                light.intensity = 0.0;
+            }
+            HazardBeamPhase::Telegraph => {
+                sprite.custom_size = Some(Vec2::new(4.0, vis.size.y));
+                sprite.color = Color::linear_rgba(5.4, 3.2, 0.5, 0.35 + 0.55 * flash);
+                light.color = LinearRgba::new(1.0, 0.65, 0.18, 1.0);
+                light.intensity = 1.4 * flash;
+            }
+            HazardBeamPhase::Active => {
+                let w = vis.size.x * (0.90 + 0.14 * flash);
+                sprite.custom_size = Some(Vec2::new(w, vis.size.y));
+                sprite.color = Color::linear_rgba(5.4, 1.25 + 0.9 * flash, 0.35, 0.92);
+                light.color = LinearRgba::new(1.0, 0.30, 0.15, 1.0);
+                light.intensity = 2.9;
+            }
+        }
+    }
+
+    // 4. Breakable Walls: fracture cracks glow hotter as HP drops!
+    let pulse = 0.7 + 0.3 * (t * 14.0).sin();
+    for (vis, mut sprite) in &mut wall_cracks {
+        let Ok(wall) = walls.get(vis.owner) else {
+            continue;
+        };
+        let dmg = 1.0 - wall.hp_ratio();
+        sprite.color = Color::linear_rgb(
+            (4.4 + dmg * 1.4) * pulse,
+            (1.6 + dmg * 2.2) * pulse,
+            0.3 + dmg * 0.9,
+        );
+    }
+}
+
+/// Spawns subtle rising molten Foundry ember motes near the active camera for rich atmospheric depth!
+fn spawn_ambient_foundry_embers(
+    mut commands: Commands,
+    time: Res<Time>,
+    state: Res<State<AppState>>,
+    mut embers: ResMut<AmbientEmberTimer>,
+    cameras: Query<&Transform, With<PixelWorldCamera>>,
+) {
+    if *state.get() != AppState::Playing {
+        return;
+    }
+    embers.timer -= time.delta_secs();
+    if embers.timer > 0.0 {
+        return;
+    }
+    embers.timer = 0.18;
+    embers.seed = embers.seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+
+    let Ok(cam_tf) = cameras.single() else {
+        return;
+    };
+    let rx = ((embers.seed & 0xFFFF) as f32 / 65535.0) * 600.0 - 300.0;
+    let ry = (((embers.seed >> 16) & 0xFFFF) as f32 / 65535.0) * 90.0 - 175.0;
+    let pos = Vec2::new(cam_tf.translation.x + rx, cam_tf.translation.y + ry);
+    let color = if embers.seed.is_multiple_of(3) {
+        Color::linear_rgba(0.4, 3.2, 4.8, 0.75)
+    } else {
+        Color::linear_rgba(4.8, 1.9, 0.35, 0.80)
+    };
+    commands.spawn((
+        HitSpark {
+            velocity: Vec2::new((rx * 0.08).clamp(-18.0, 18.0), 34.0 + (embers.seed % 26) as f32),
+            lifetime: 1.45,
+            max_lifetime: 1.45,
+        },
+        Sprite {
+            color,
+            custom_size: Some(Vec2::new(2.0, 2.0)),
+            ..default()
+        },
+        Transform::from_xyz(pos.x, pos.y, -2.5),
+        RenderLayers::layer(WORLD_RENDER_LAYER),
+    ));
 }
 
 fn update_wall_turret_visuals(

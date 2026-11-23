@@ -3776,4 +3776,219 @@ SpriteSheetManifest(
             "Plasma Arcanist must summon a telegraphed PendingArcanePillar ground rune"
         );
     }
+
+    // -------------------------------------------------------------------------
+    // Full 8-Sector Stage 1 ("THE FOUNDRY CITADEL") Mechanics & Layout Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_full_stage1_foundry_citadel_features_and_counts() {
+        use std::collections::HashMap;
+        use bevy::asset::{AssetPlugin, LoadState};
+        use bevy_ecs_ldtk::assets::{LdtkAssetPlugin, LdtkProject};
+        use bevy_ecs_ldtk::prelude::LdtkFields;
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default(), LdtkAssetPlugin));
+        app.finish();
+        app.cleanup();
+
+        let handle: Handle<LdtkProject> = app
+            .world()
+            .resource::<AssetServer>()
+            .load("levels/demo_gym.ldtk");
+
+        let mut loaded = false;
+        for _ in 0..400 {
+            app.update();
+            if matches!(
+                app.world().resource::<AssetServer>().get_load_state(&handle),
+                Some(LoadState::Loaded)
+            ) {
+                loaded = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(loaded);
+
+        let project = app
+            .world()
+            .resource::<Assets<LdtkProject>>()
+            .get(&handle)
+            .expect("LdtkProject loaded");
+        let level = project.json_data().levels.first().unwrap();
+        assert!(level.px_wid >= 9000, "Full 8-Sector Stage 1 must span >= 9,000px");
+
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        let mut cores = 0usize;
+        let mut relics = 0usize;
+        let mut heals = 0usize;
+
+        for layer in level.layer_instances.as_ref().unwrap() {
+            for ent in &layer.entity_instances {
+                *counts.entry(ent.identifier.clone()).or_insert(0) += 1;
+                if ent.identifier == "Collectible"
+                    && let Ok(kind) = ent.get_string_field("kind")
+                {
+                    match kind.as_str() {
+                        "relic" => relics += 1,
+                        "heal" => heals += 1,
+                        _ => cores += 1,
+                    }
+                }
+            }
+        }
+
+        assert!(counts.get("JumpPad").copied().unwrap_or(0) >= 5, "Expected >= 5 JumpPads");
+        assert_eq!(counts.get("CheckpointBeacon").copied().unwrap_or(0), 5, "Expected 5 Checkpoints");
+        assert!(counts.get("BreakableWall").copied().unwrap_or(0) >= 3, "Expected >= 3 BreakableWalls");
+        assert!(counts.get("TimedHazardBeam").copied().unwrap_or(0) >= 5, "Expected >= 5 TimedHazardBeams");
+        assert!(counts.get("Slope").copied().unwrap_or(0) >= 3, "Expected >= 3 Slopes");
+        assert!(counts.get("MovingPlatform").copied().unwrap_or(0) >= 4, "Expected >= 4 MovingPlatforms");
+        assert!(counts.get("EnemySpawn").copied().unwrap_or(0) >= 12, "Expected >= 12 roaming enemies");
+        assert_eq!(counts.get("EncounterZone").copied().unwrap_or(0), 3);
+        assert!(cores >= 15, "Expected >= 15 Energy Cores, got {cores}");
+        assert_eq!(relics, 3, "Expected exactly 3 hidden Secret Relics");
+        assert!(heals >= 5, "Expected >= 5 Heal Canisters, got {heals}");
+    }
+
+    #[test]
+    fn test_jump_pad_checkpoint_beacon_and_collectibles() {
+        use crate::combat::DamagePercent;
+        use crate::enemies::{ArenaScore, PlayerCheckpoint};
+        use crate::physics::{
+            CheckpointBeacon, CollectibleItem, CollectibleKind, JumpPad, KinematicBody,
+            MovementState, SolidRect,
+        };
+
+        let (mut app, player) = physics_test_app(Vec2::new(0.0, 18.0));
+        app.world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-200.0, -32.0), Vec2::new(400.0, 0.0)));
+        app.world_mut().get_mut::<DamagePercent>(player).unwrap().0 = 80.0;
+
+        // 1. Activate Checkpoint Beacon -> saves respawn & heals -25%!
+        let beacon = app
+            .world_mut()
+            .spawn(CheckpointBeacon::new(1, Vec2::new(10.0, 0.0)))
+            .id();
+        step_fixed_ticks(&mut app, 2);
+        assert!(app.world().get::<CheckpointBeacon>(beacon).unwrap().activated);
+        assert!((app.world().resource::<PlayerCheckpoint>().0.x - 10.0).abs() < 1.0);
+        assert_eq!(app.world().get::<DamagePercent>(player).unwrap().0, 55.0);
+
+        // 2. Collect EnergyCore (-5%), SecretRelic (-20%), and HealCanister (-40% -> clamps 0%)!
+        app.world_mut().resource_mut::<ArenaScore>().cores_total = 10;
+        app.world_mut().resource_mut::<ArenaScore>().relics_total = 3;
+        app.world_mut()
+            .spawn(CollectibleItem::new(CollectibleKind::EnergyCore, Vec2::new(2.0, 18.0)));
+        app.world_mut()
+            .spawn(CollectibleItem::new(CollectibleKind::SecretRelic, Vec2::new(4.0, 18.0)));
+        app.world_mut()
+            .spawn(CollectibleItem::new(CollectibleKind::HealCanister, Vec2::new(6.0, 18.0)));
+        step_fixed_ticks(&mut app, 2);
+
+        let score = *app.world().resource::<ArenaScore>();
+        assert_eq!(score.cores_collected, 1);
+        assert_eq!(score.relics_collected, 1);
+        assert_eq!(app.world().get::<DamagePercent>(player).unwrap().0, 0.0);
+        assert_eq!(
+            app.world_mut().query::<&CollectibleItem>().iter(app.world()).count(),
+            0
+        );
+
+        // 3. Step on JumpPad -> catapults sharply upward and refreshes double-jump!
+        app.world_mut()
+            .spawn(JumpPad::new(Vec2::new(0.0, 5.0), Vec2::new(40.0, 10.0), 600.0));
+        app.world_mut()
+            .get_mut::<KinematicBody>(player)
+            .unwrap()
+            .air_jumps_remaining = 0;
+        step_fixed_ticks(&mut app, 1);
+        let body = app.world().get::<KinematicBody>(player).unwrap();
+        assert_eq!(body.state, MovementState::Airborne);
+        assert!(body.velocity.y >= 550.0, "JumpPad must launch player sharply upward, got vy={}", body.velocity.y);
+        assert_eq!(body.air_jumps_remaining, 1);
+
+        // 4. Verify S-Rank calculation
+        let s_score = ArenaScore {
+            cores_collected: 16,
+            cores_total: 18,
+            relics_collected: 3,
+            relics_total: 3,
+            ..default()
+        };
+        assert_eq!(s_score.compute_stage_rank(150.0, 6), "S");
+    }
+
+    #[test]
+    fn test_breakable_wall_shatters_and_timed_hazard_beam_cycles() {
+        use crate::combat::DamagePercent;
+        use crate::enemies::{ArenaScore, spawn_breakable_wall};
+        use crate::physics::{
+            BreakableWall, HazardBeamPhase, KinematicBody, MovementState, PlayerIntent, SolidRect,
+            TimedHazardBeam,
+        };
+
+        // 1. BreakableWall shatters on melee attacks and clears its SolidRect!
+        let (mut app, player) = physics_test_app(Vec2::new(0.0, 18.0));
+        app.world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-100.0, -32.0), Vec2::new(300.0, 0.0)));
+        let wall = {
+            let mut cmds = app.world_mut().commands();
+            let id = spawn_breakable_wall(&mut cmds, Vec2::new(32.0, 30.0), Vec2::new(22.0, 60.0), 16.0);
+            app.world_mut().flush();
+            id
+        };
+        step_fixed_ticks(&mut app, 2);
+        {
+            let mut b = app.world_mut().get_mut::<KinematicBody>(player).unwrap();
+            b.state = MovementState::Grounded;
+            b.facing = 1.0;
+            b.ground_speed = 0.0;
+        }
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.move_axis = Vec2::new(1.0, 0.0);
+            intent.melee_just_pressed = true;
+            intent.melee_held = false;
+        }
+        step_fixed_ticks(&mut app, 2);
+        assert!(
+            app.world().get::<BreakableWall>(wall).is_none(),
+            "Forward-Smash (18 dmg) must shatter 16 HP BreakableWall cleanly!"
+        );
+        assert_eq!(app.world().resource::<ArenaScore>().walls_broken, 1);
+
+        // 2. TimedHazardBeam cycles Off -> Telegraph -> Active, only hurting P1 while Active!
+        let (mut app2, p2) = physics_test_app(Vec2::new(100.0, 18.0));
+        app2.world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(0.0, -32.0), Vec2::new(200.0, 0.0)));
+        let beam = app2
+            .world_mut()
+            .spawn(TimedHazardBeam::new(Vec2::new(100.0, 45.0), Vec2::new(20.0, 90.0), 0.0))
+            .id();
+        assert_eq!(app2.world().get::<TimedHazardBeam>(beam).unwrap().phase(), HazardBeamPhase::Off);
+        step_fixed_ticks(&mut app2, 30); // t = 0.50s -> still Off
+        assert_eq!(app2.world().get::<DamagePercent>(p2).unwrap().0, 0.0);
+
+        // Advance into Telegraph (t = 1.85s) -> still 0% damage!
+        step_fixed_ticks(&mut app2, 81);
+        assert_eq!(
+            app2.world().get::<TimedHazardBeam>(beam).unwrap().phase(),
+            HazardBeamPhase::Telegraph
+        );
+        assert_eq!(app2.world().get::<DamagePercent>(p2).unwrap().0, 0.0);
+
+        // Advance into Active (t = 2.35s) -> triggers hazard damage & Smash launch!
+        step_fixed_ticks(&mut app2, 30);
+        assert_eq!(
+            app2.world().get::<TimedHazardBeam>(beam).unwrap().phase(),
+            HazardBeamPhase::Active
+        );
+        assert!(
+            app2.world().get::<DamagePercent>(p2).unwrap().0 >= 10.0,
+            "Active TimedHazardBeam must damage overlapping player"
+        );
+    }
 }

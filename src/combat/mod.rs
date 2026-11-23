@@ -228,19 +228,19 @@ impl AttackKind {
     /// Arcade HUD callout name displayed when unleashing signature moves.
     pub fn display_name(self) -> &'static str {
         match self {
-            AttackKind::Jab1 => "SLASH I",
-            AttackKind::Jab2 => "CROSS SLASH II",
-            AttackKind::Jab3 => "BREAKER THRUST!",
-            AttackKind::DownTilt => "LOW SWEEP",
-            AttackKind::UpTilt => "RISING ARC",
-            AttackKind::ForwardSmash => "FORWARD SMASH!",
-            AttackKind::UpSmash => "UP SMASH!",
+            AttackKind::Jab1 => "RIFT SLASH I",
+            AttackKind::Jab2 => "RISING CROSS II",
+            AttackKind::Jab3 => "BREAKER CLEAVE III!",
+            AttackKind::DownTilt => "LOW SABER SWEEP",
+            AttackKind::UpTilt => "MOON CRESCENT ARC",
+            AttackKind::ForwardSmash => "TITAN F-SMASH!",
+            AttackKind::UpSmash => "SKYWARD UP-SMASH!",
             AttackKind::DownSmash => "360° DOWN SMASH!",
-            AttackKind::DashAttack => "DASH LUNGE",
-            AttackKind::NeutralAir => "AIR SPIN",
-            AttackKind::ForwardAir => "FORWARD AIR",
-            AttackKind::BackAir => "BACK AIR!",
-            AttackKind::UpAir => "UP AIR",
+            AttackKind::DashAttack => "DASH CRESCENT",
+            AttackKind::NeutralAir => "AIR HURRICANE",
+            AttackKind::ForwardAir => "FORWARD AIR SLASH",
+            AttackKind::BackAir => "BACK AIR CLEAVE!",
+            AttackKind::UpAir => "UP AIR CRESCENT",
             AttackKind::DownAir => "METEOR SPIKE!",
             AttackKind::NeutralSpecial => "BREAKER WAVE!",
             AttackKind::SideSpecial => "PLASMA BLITZ!",
@@ -317,7 +317,7 @@ impl GroundDodgeState {
     }
 }
 
-/// Tracks a Chargeable Smash Attack (`ForwardSmash`, `UpSmash`, `DownSmash`) while holding Melee.
+/// Tracks a Chargeable Smash Attack (`ForwardSmash`, `UpSmash`, `DownSmash`) while holding Melee or HeavySmash.
 #[derive(Component, Debug, Clone, Default)]
 pub struct SmashChargeState {
     /// Target Smash attack currently charging (`None` when not charging).
@@ -325,6 +325,8 @@ pub struct SmashChargeState {
     /// If `Some(tilt)`, releasing before `SMASH_HOLD_PROMOTE_SECS` fires the fast Tilt instead!
     pub quick_tap_tilt: Option<AttackKind>,
     pub charge_secs: f32,
+    /// `true` when initiated by the dedicated `HeavySmash` (`U`/`V`) button instead of `MeleeAttack`.
+    pub charge_source_heavy: bool,
 }
 
 impl SmashChargeState {
@@ -559,6 +561,10 @@ pub struct AttackState {
     pub side_special_used: bool,
     /// Brief timer set whenever a Buster shot fires so animation can flash `"buster"`.
     pub buster_anim_timer: f32,
+    /// 7-frame (`0.12s`) Smash-style input buffers so rapid sword combo taps never drop!
+    pub buffered_melee_timer: f32,
+    pub buffered_heavy_timer: f32,
+    pub buffered_special_timer: f32,
 }
 
 /// Tracks Mega Man Buster tap/charge state on a shooter entity.
@@ -802,16 +808,16 @@ pub fn resolve_move_spec(kind: AttackKind, frame_data: &FighterFrameData) -> Mov
         let body_y = hb.offset.1 + 18.0;
         match kind {
             AttackKind::Jab1 => {
-                spec.offset = Vec2::new(hb.offset.0.max(19.0), body_y.clamp(-4.0, 10.0));
-                spec.radius = hb.radius.max(15.0);
+                spec.offset = Vec2::new(hb.offset.0.clamp(20.0, 28.0), body_y.clamp(-2.0, 10.0));
+                spec.radius = (hb.radius + 3.0).max(17.5);
             }
             AttackKind::Jab2 => {
-                spec.offset = Vec2::new(hb.offset.0.max(21.0), body_y.clamp(-4.0, 10.0));
-                spec.radius = (hb.radius + 1.5).max(16.0);
+                spec.offset = Vec2::new(hb.offset.0.clamp(22.0, 30.0), body_y.clamp(0.0, 14.0));
+                spec.radius = (hb.radius + 3.5).max(18.5);
             }
             AttackKind::Jab3 => {
-                spec.offset = Vec2::new(hb.offset.0.max(25.0), body_y.clamp(-2.0, 12.0));
-                spec.radius = (hb.radius + 4.0).max(18.0);
+                spec.offset = Vec2::new(hb.offset.0.clamp(26.0, 34.0), body_y.clamp(-2.0, 12.0));
+                spec.radius = (hb.radius + 4.0).max(21.0);
             }
             AttackKind::DashAttack => {
                 spec.offset = Vec2::new(hb.offset.0.max(22.0), body_y.clamp(-4.0, 10.0));
@@ -824,7 +830,8 @@ pub fn resolve_move_spec(kind: AttackKind, frame_data: &FighterFrameData) -> Mov
                 spec.damage = hb.damage;
             }
             AttackKind::DownAir => {
-                spec.offset = Vec2::new(hb.offset.0, body_y.clamp(-24.0, -14.0));
+                // Anchor hitbox squarely at the plunging downward Rift Saber tip beneath boots
+                spec.offset = Vec2::new(hb.offset.0.clamp(-6.0, 12.0), (body_y - 6.0).clamp(-24.0, -18.0));
                 spec.radius = hb.radius.max(17.0);
                 spec.damage = hb.damage;
                 spec.angle_deg = hb.angle_deg;
@@ -875,45 +882,45 @@ pub fn resolve_move_spec(kind: AttackKind, frame_data: &FighterFrameData) -> Mov
 
 fn default_move_spec(kind: AttackKind) -> MoveSpec {
     match kind {
-        // Snappy 3-hit Neutral Jab: Hits 1 & 2 link cleanly; Hit 3 is a heavy Smash launcher!
+        // Snappy 3-hit Rift Saber Combo: Overhead Cleave -> Rising Uppercut Cross -> Breaker Cleave Finisher!
         AttackKind::Jab1 => MoveSpec {
-            offset: Vec2::new(20.0, 2.0),
-            radius: 15.0,
-            damage: 4.0,
-            base_kb: 88.0,
+            offset: Vec2::new(22.0, 2.0),
+            radius: 17.5,
+            damage: 5.0,
+            base_kb: 92.0,
             kb_scale: 0.45,
-            momentum_mult: 0.15,
-            angle_deg: 22.0,
-            active_secs: 0.10,
-            cooldown_secs: 0.16,
+            momentum_mult: 0.18,
+            angle_deg: 24.0,
+            active_secs: 0.11,
+            cooldown_secs: 0.14,
             recoil_bounce_vy: None,
             hitbox_facing_sign: 1.0,
             min_hitstop_frames: 3,
         },
         AttackKind::Jab2 => MoveSpec {
-            offset: Vec2::new(22.0, 3.0),
-            radius: 16.0,
-            damage: 5.0,
-            base_kb: 98.0,
-            kb_scale: 0.55,
-            momentum_mult: 0.20,
-            angle_deg: 26.0,
-            active_secs: 0.10,
-            cooldown_secs: 0.17,
+            offset: Vec2::new(24.0, 5.0),
+            radius: 18.5,
+            damage: 6.0,
+            base_kb: 105.0,
+            kb_scale: 0.58,
+            momentum_mult: 0.22,
+            angle_deg: 40.0,
+            active_secs: 0.11,
+            cooldown_secs: 0.15,
             recoil_bounce_vy: None,
             hitbox_facing_sign: 1.0,
             min_hitstop_frames: 3,
         },
         AttackKind::Jab3 => MoveSpec {
-            offset: Vec2::new(26.0, 4.0),
-            radius: 18.0,
-            damage: 11.0,
-            base_kb: 245.0,
-            kb_scale: 3.1,
-            momentum_mult: 0.45,
+            offset: Vec2::new(28.0, 4.0),
+            radius: 21.0,
+            damage: 12.0,
+            base_kb: 255.0,
+            kb_scale: 3.15,
+            momentum_mult: 0.48,
             angle_deg: 36.0,
-            active_secs: 0.13,
-            cooldown_secs: 0.34,
+            active_secs: 0.14,
+            cooldown_secs: 0.30,
             recoil_bounce_vy: None,
             hitbox_facing_sign: 1.0,
             min_hitstop_frames: 6,
@@ -1464,6 +1471,18 @@ fn handle_player_melee_and_special(
         attack.cooldown = (attack.cooldown - dt).max(0.0);
         attack.jab_combo_window = (attack.jab_combo_window - dt).max(0.0);
         attack.buster_anim_timer = (attack.buster_anim_timer - dt).max(0.0);
+        attack.buffered_melee_timer = (attack.buffered_melee_timer - dt).max(0.0);
+        attack.buffered_heavy_timer = (attack.buffered_heavy_timer - dt).max(0.0);
+        attack.buffered_special_timer = (attack.buffered_special_timer - dt).max(0.0);
+        if intent.melee_just_pressed {
+            attack.buffered_melee_timer = 0.12;
+        }
+        if intent.heavy_just_pressed {
+            attack.buffered_heavy_timer = 0.12;
+        }
+        if intent.special_just_pressed {
+            attack.buffered_special_timer = 0.12;
+        }
         if attack.jab_combo_window <= 0.0 {
             attack.jab_combo_step = 0;
         }
@@ -1525,7 +1544,7 @@ fn handle_player_melee_and_special(
             continue;
         }
 
-        // 0. Active Chargeable Smash Attack (hold Melee to power up 1.0x -> 1.55x, release to unleash!)
+        // 0. Active Chargeable Smash Attack (hold Melee or HeavySmash to power up 1.0x -> 1.55x, release to unleash!)
         if let Some(ref mut sc) = maybe_smash_charge
             && let Some(target_smash) = sc.kind
         {
@@ -1536,7 +1555,12 @@ fn handle_player_melee_and_special(
                 body.ground_speed *= (1.0 - dt * 14.0).max(0.0);
                 body.velocity.x = body.ground_speed;
 
-                let should_release = !intent.melee_held || sc.charge_secs >= MAX_SMASH_CHARGE_SECS;
+                let hold_active = if sc.charge_source_heavy {
+                    intent.heavy_held
+                } else {
+                    intent.melee_held
+                };
+                let should_release = !hold_active || sc.charge_secs >= MAX_SMASH_CHARGE_SECS;
                 if should_release {
                     let (final_kind, charge_ratio) = if let Some(tilt) = sc.quick_tap_tilt
                         && sc.charge_secs < SMASH_HOLD_PROMOTE_SECS
@@ -1548,9 +1572,12 @@ fn handle_player_melee_and_special(
                     **sc = SmashChargeState::default();
 
                     if final_kind == AttackKind::ForwardSmash {
-                        body.ground_speed = body.facing * (90.0 + charge_ratio * 55.0);
+                        body.ground_speed = body.facing * (95.0 + charge_ratio * 60.0);
                         body.velocity.x = body.ground_speed;
                     }
+                    attack.buster_anim_timer = 0.0;
+                    attack.buffered_melee_timer = 0.0;
+                    attack.buffered_heavy_timer = 0.0;
                     let attacker_speed = body.speed();
                     execute_melee_attack(
                         &mut commands,
@@ -1576,6 +1603,9 @@ fn handle_player_melee_and_special(
         }
 
         let attacker_speed = body.speed();
+        let special_triggered = intent.special_just_pressed || attack.buffered_special_timer > 0.0;
+        let heavy_triggered = intent.heavy_just_pressed || attack.buffered_heavy_timer > 0.0;
+        let melee_triggered = intent.melee_just_pressed || attack.buffered_melee_timer > 0.0;
 
         // 0b. Stylish Smash Victory Taunt (Select / T while grounded)
         if intent.taunt_just_pressed && body.state == MovementState::Grounded {
@@ -1602,7 +1632,9 @@ fn handle_player_melee_and_special(
 
         // 1. Full 4-Direction Smash Specials (Grounded Up-B Hurricane Sword Spin, Airborne Up-B Rising Cyclone,
         //    Down-B Counter/Dive, Side-B Blitz, Neutral-B Breaker Wave)
-        if intent.special_just_pressed {
+        if special_triggered {
+            attack.buffered_special_timer = 0.0;
+            attack.buster_anim_timer = 0.0;
             let grounded = body.state == MovementState::Grounded;
             if intent.move_axis.y < -0.45 {
                 if grounded {
@@ -1827,8 +1859,165 @@ fn handle_player_melee_and_special(
             }
         }
 
-        // 2. Directional Melee Normals, Chargeable Smashes (F/U/D-Smash), & 5-Way Aerials
-        if intent.melee_just_pressed {
+        // 1b. Classic Smash Bros. Right-Stick (C-Stick) Instant Smashes & Aerials!
+        if intent.c_stick_just_flicked {
+            let cs = intent.c_stick_axis;
+            attack.buster_anim_timer = 0.0;
+            match body.state {
+                MovementState::Airborne | MovementState::WallSliding { .. } => {
+                    let kind = if cs.y < -0.45 && cs.y.abs() >= cs.x.abs() {
+                        AttackKind::DownAir
+                    } else if cs.y > 0.45 && cs.y.abs() >= cs.x.abs() {
+                        AttackKind::UpAir
+                    } else if cs.x * body.facing < -0.35 {
+                        AttackKind::BackAir
+                    } else {
+                        AttackKind::ForwardAir
+                    };
+                    execute_melee_attack(
+                        &mut commands,
+                        entity,
+                        *team,
+                        &body,
+                        &mut attack,
+                        attacker_speed,
+                        kind,
+                        0.0,
+                        &frame_data,
+                        &active_attached,
+                        &mut callout,
+                        &mut vis_events,
+                    );
+                    continue;
+                }
+                MovementState::Grounded => {
+                    let kind = if cs.y < -0.45 && cs.y.abs() >= cs.x.abs() {
+                        body.ground_speed *= 0.20;
+                        body.velocity.x = body.ground_speed;
+                        AttackKind::DownSmash
+                    } else if cs.y > 0.45 && cs.y.abs() >= cs.x.abs() {
+                        body.ground_speed *= 0.25;
+                        body.velocity.x = body.ground_speed;
+                        AttackKind::UpSmash
+                    } else {
+                        if cs.x.abs() > 0.25 {
+                            body.facing = cs.x.signum();
+                        }
+                        body.ground_speed = body.facing * 95.0;
+                        body.velocity.x = body.ground_speed;
+                        AttackKind::ForwardSmash
+                    };
+                    execute_melee_attack(
+                        &mut commands,
+                        entity,
+                        *team,
+                        &body,
+                        &mut attack,
+                        attacker_speed,
+                        kind,
+                        0.0,
+                        &frame_data,
+                        &active_attached,
+                        &mut callout,
+                        &mut vis_events,
+                    );
+                    continue;
+                }
+                MovementState::LoopLocked { .. } | MovementState::SpinCharging { .. } => {}
+            }
+        }
+
+        // 1c. Dedicated Heavy / Chargeable Smash Button (`U` / `V` / `R3`):
+        //     Fires or holds-to-charge F-Smash, Up-Smash, or Down-Smash with ZERO conflict with instant sword combos!
+        if heavy_triggered {
+            attack.buffered_heavy_timer = 0.0;
+            attack.buster_anim_timer = 0.0;
+            match body.state {
+                MovementState::Airborne | MovementState::WallSliding { .. } => {
+                    let kind = if intent.move_axis.y < -0.35 {
+                        AttackKind::DownAir
+                    } else if intent.move_axis.y > 0.40 {
+                        AttackKind::UpAir
+                    } else if intent.move_axis.x * body.facing < -0.45 {
+                        AttackKind::BackAir
+                    } else {
+                        AttackKind::ForwardAir
+                    };
+                    execute_melee_attack(
+                        &mut commands,
+                        entity,
+                        *team,
+                        &body,
+                        &mut attack,
+                        attacker_speed,
+                        kind,
+                        0.0,
+                        &frame_data,
+                        &active_attached,
+                        &mut callout,
+                        &mut vis_events,
+                    );
+                    continue;
+                }
+                MovementState::Grounded => {
+                    let target_smash = if intent.move_axis.y < -0.45 {
+                        AttackKind::DownSmash
+                    } else if intent.move_axis.y > 0.45 {
+                        AttackKind::UpSmash
+                    } else {
+                        if intent.move_axis.x.abs() > 0.25 {
+                            body.facing = intent.move_axis.x.signum();
+                        }
+                        AttackKind::ForwardSmash
+                    };
+                    let can_charge_heavy = control_cfg.smash_charge
+                        && intent.heavy_held
+                        && maybe_smash_charge.is_some();
+                    if can_charge_heavy
+                        && let Some(ref mut sc) = maybe_smash_charge
+                    {
+                        body.ground_speed = 0.0;
+                        body.velocity.x = 0.0;
+                        **sc = SmashChargeState {
+                            kind: Some(target_smash),
+                            quick_tap_tilt: None,
+                            charge_secs: 0.0,
+                            charge_source_heavy: true,
+                        };
+                    } else {
+                        if target_smash == AttackKind::ForwardSmash {
+                            body.ground_speed = body.facing * 95.0;
+                            body.velocity.x = body.ground_speed;
+                        } else {
+                            body.ground_speed *= 0.20;
+                            body.velocity.x = body.ground_speed;
+                        }
+                        execute_melee_attack(
+                            &mut commands,
+                            entity,
+                            *team,
+                            &body,
+                            &mut attack,
+                            attacker_speed,
+                            target_smash,
+                            0.0,
+                            &frame_data,
+                            &active_attached,
+                            &mut callout,
+                            &mut vis_events,
+                        );
+                    }
+                    continue;
+                }
+                MovementState::LoopLocked { .. } | MovementState::SpinCharging { .. } => continue,
+            }
+        }
+
+        // 2. Instant Sword-First Melee Normals (3-Hit Advancing Saber Combo, Zero-Lag Tilts,
+        //    Dash Crescent, Standstill Chargeable Smashes, & 5-Way Aerials!)
+        if melee_triggered {
+            attack.buffered_melee_timer = 0.0;
+            attack.buster_anim_timer = 0.0;
             match body.state {
                 MovementState::Airborne | MovementState::WallSliding { .. } => {
                     let kind = if intent.move_axis.y < -0.35 {
@@ -1876,6 +2065,7 @@ fn handle_player_melee_and_special(
                                     kind: Some(AttackKind::DownSmash),
                                     quick_tap_tilt: None,
                                     charge_secs: 0.0,
+                                    charge_source_heavy: false,
                                 };
                             } else {
                                 execute_melee_attack(
@@ -1893,16 +2083,9 @@ fn handle_player_melee_and_special(
                                     &mut vis_events,
                                 );
                             }
-                        } else if can_charge
-                            && let Some(ref mut sc) = maybe_smash_charge
-                        {
-                            // Quick tap (< 0.13s) = snappy Down-Tilt; hold >= 0.13s = Chargeable 360° Down-Smash!
-                            **sc = SmashChargeState {
-                                kind: Some(AttackKind::DownSmash),
-                                quick_tap_tilt: Some(AttackKind::DownTilt),
-                                charge_secs: 0.0,
-                            };
                         } else {
+                            // Zero-lag instant Low Saber Sweep (Down-Tilt)!
+                            // (Use `U`/`V`, Right Stick, or `Boost + Down + Melee` for 360° Down-Smash!)
                             execute_melee_attack(
                                 &mut commands,
                                 entity,
@@ -1929,6 +2112,7 @@ fn handle_player_melee_and_special(
                                     kind: Some(AttackKind::UpSmash),
                                     quick_tap_tilt: None,
                                     charge_secs: 0.0,
+                                    charge_source_heavy: false,
                                 };
                             } else {
                                 execute_melee_attack(
@@ -1946,16 +2130,9 @@ fn handle_player_melee_and_special(
                                     &mut vis_events,
                                 );
                             }
-                        } else if can_charge
-                            && let Some(ref mut sc) = maybe_smash_charge
-                        {
-                            // Quick tap (< 0.13s) = snappy Up-Tilt; hold >= 0.13s = Chargeable Up-Smash!
-                            **sc = SmashChargeState {
-                                kind: Some(AttackKind::UpSmash),
-                                quick_tap_tilt: Some(AttackKind::UpTilt),
-                                charge_secs: 0.0,
-                            };
                         } else {
+                            // Zero-lag instant 180° Overhead Moon Crescent (Up-Tilt)!
+                            // (Use `U`/`V`, Right Stick, or `Boost + Up + Melee` for Skyward Up-Smash!)
                             execute_melee_attack(
                                 &mut commands,
                                 entity,
@@ -1971,9 +2148,12 @@ fn handle_player_melee_and_special(
                                 &mut vis_events,
                             );
                         }
-                    } else if attacker_speed >= 195.0 && intent.move_axis.x * body.facing > 0.35 {
-                        // Dash Attack (controlled lunge, ledge-clamped!)
-                        let boost = (attacker_speed * 0.95).clamp(210.0, 310.0);
+                    } else if attacker_speed >= 230.0
+                        && intent.move_axis.x * body.facing > 0.35
+                        && attack.jab_combo_step == 0
+                    {
+                        // High-Speed Sprint Dash Crescent Slash (controlled lunge, ledge-clamped!)
+                        let boost = (attacker_speed * 0.95).clamp(225.0, 315.0);
                         body.ground_speed = body.facing * boost;
                         body.velocity.x = body.ground_speed;
                         execute_melee_attack(
@@ -1990,8 +2170,11 @@ fn handle_player_melee_and_special(
                             &mut callout,
                             &mut vis_events,
                         );
-                    } else if intent.move_axis.x.abs() > 0.72 && attacker_speed < 195.0 {
-                        // Forward-Smash: tap for instant smash, hold to charge up to 1.55x!
+                    } else if intent.move_axis.x.abs() > 0.72
+                        && attacker_speed <= 25.0
+                        && attack.jab_combo_step == 0
+                    {
+                        // Standstill Hard-Side Forward-Smash: tap for heavy Titan F-Smash, hold to charge up to 1.55x!
                         body.facing = intent.move_axis.x.signum();
                         if can_charge
                             && let Some(ref mut sc) = maybe_smash_charge
@@ -2002,9 +2185,10 @@ fn handle_player_melee_and_special(
                                 kind: Some(AttackKind::ForwardSmash),
                                 quick_tap_tilt: None,
                                 charge_secs: 0.0,
+                                charge_source_heavy: false,
                             };
                         } else {
-                            body.ground_speed = body.facing * 90.0;
+                            body.ground_speed = body.facing * 95.0;
                             body.velocity.x = body.ground_speed;
                             execute_melee_attack(
                                 &mut commands,
@@ -2022,23 +2206,34 @@ fn handle_player_melee_and_special(
                             );
                         }
                     } else {
-                        let jab_kind = match attack.jab_combo_step {
+                        // Instant Advancing 3-Hit Rift Saber Combo (works both standing AND while walking/chaining!)
+                        if intent.move_axis.x.abs() > 0.25 {
+                            body.facing = intent.move_axis.x.signum();
+                        }
+                        let (jab_kind, lunge_spd) = match attack.jab_combo_step {
                             0 => {
                                 attack.jab_combo_step = 1;
-                                attack.jab_combo_window = 0.46;
-                                AttackKind::Jab1
+                                attack.jab_combo_window = 0.58;
+                                (AttackKind::Jab1, 90.0_f32)
                             }
                             1 => {
                                 attack.jab_combo_step = 2;
-                                attack.jab_combo_window = 0.46;
-                                AttackKind::Jab2
+                                attack.jab_combo_window = 0.58;
+                                (AttackKind::Jab2, 108.0_f32)
                             }
                             _ => {
                                 attack.jab_combo_step = 0;
                                 attack.jab_combo_window = 0.0;
-                                AttackKind::Jab3
+                                (AttackKind::Jab3, 145.0_f32)
                             }
                         };
+                        let step_mag = if intent.move_axis.x.abs() > 0.25 {
+                            lunge_spd
+                        } else {
+                            lunge_spd * 0.60
+                        };
+                        body.ground_speed = body.facing * step_mag;
+                        body.velocity.x = body.ground_speed;
                         execute_melee_attack(
                             &mut commands,
                             entity,
@@ -2132,23 +2327,27 @@ fn execute_melee_attack(
         });
     } else {
         let (heavy, arc_angle, color_rgb) = match kind {
-            AttackKind::Jab3 | AttackKind::ForwardSmash => (true, 0.12, [4.8, 2.5, 0.35]),
-            AttackKind::UpSmash => (true, std::f32::consts::FRAC_PI_2, [5.0, 3.0, 0.40]),
-            AttackKind::DownAir => (true, -std::f32::consts::FRAC_PI_2, [4.6, 1.8, 0.4]),
+            AttackKind::ForwardSmash => (true, -0.06, [5.0, 2.8, 0.35]),
+            AttackKind::Jab3 => (true, 0.04, [0.45, 4.4, 5.6]),
+            AttackKind::UpSmash => (true, std::f32::consts::FRAC_PI_2, [5.2, 3.2, 0.42]),
+            AttackKind::DownAir => (true, -std::f32::consts::FRAC_PI_2, [4.8, 2.0, 0.40]),
             AttackKind::UpTilt | AttackKind::UpAir => {
-                (false, std::f32::consts::FRAC_PI_2, [0.35, 3.6, 5.2])
+                (false, std::f32::consts::FRAC_PI_2, [0.32, 3.9, 5.4])
             }
-            AttackKind::DownTilt => (false, -0.45, [0.4, 3.8, 5.0]),
-            AttackKind::BackAir => (true, std::f32::consts::PI, [4.6, 2.6, 0.5]),
-            AttackKind::Jab2 => (false, 0.42, [0.45, 3.9, 5.2]),
-            _ => (false, 0.0, [0.35, 3.4, 4.8]),
+            AttackKind::DownTilt => (false, -0.36, [0.35, 4.0, 5.2]),
+            AttackKind::BackAir => (true, 0.0, [4.8, 2.8, 0.55]),
+            AttackKind::Jab2 => (false, 0.48, [0.40, 4.2, 5.5]),
+            AttackKind::Jab1 => (false, -0.18, [0.32, 3.8, 5.4]),
+            AttackKind::DashAttack => (true, -0.12, [0.38, 4.2, 5.5]),
+            AttackKind::ForwardAir => (false, -0.10, [0.35, 4.0, 5.4]),
+            _ => (false, 0.0, [0.35, 3.6, 5.0]),
         };
         let hb_facing = body.facing * spec.hitbox_facing_sign;
         vis_events.write(CombatVisualEvent::SlashArc {
             pos: body.position + Vec2::new(spec.offset.x * hb_facing, spec.offset.y),
             facing: hb_facing,
             angle_rad: arc_angle,
-            radius: spec.radius + 8.0 + charge_ratio * 6.0,
+            radius: spec.radius + 10.0 + charge_ratio * 7.0,
             heavy: heavy || is_charged_smash,
             color_rgb,
         });

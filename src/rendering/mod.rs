@@ -197,12 +197,20 @@ struct BusterChargeAura {
     pulse: f32,
 }
 
-/// Child visual of an [`EnemyFighter`] driving baked sprites + hitstop jitter.
+/// Child visual of an [`EnemyFighter`] driving baked sprites, state-change restarts,
+/// anticipation lean, landing squash/stretch, and hitstop jitter.
 #[derive(Component, Debug)]
 struct EnemySpriteVisual {
     owner: Entity,
     jitter_phase: f32,
     base_y: f32,
+    /// Tracks last state category (`0`=idle/run, `1`=telegraph, `2`=attack, `3`=hitstun, `4`=air)
+    /// so every attack & telegraph calls `play_restart(...)` cleanly from frame 0!
+    last_state_tag: u8,
+    last_variant: u8,
+    was_grounded: bool,
+    squash: Vec2,
+    lean_rad: f32,
 }
 
 /// Miniature pixel-art overhead HP fill bar attached to regular stage & ambush enemies.
@@ -830,12 +838,12 @@ fn decorate_added_player(
                 },
                 Transform::from_xyz(0.0, 8.0, 4.0),
             ));
-            // Floating P1 cyan downward triangle indicator directly above the player's head
+            // Floating P1 cyan downward triangle indicator cleanly above Levy's 64px sprite head
             parent
                 .spawn((
                     Name::new("PlayerP1Marker"),
                     PlayerP1Marker,
-                    Transform::from_xyz(0.0, 36.0, 8.5),
+                    Transform::from_xyz(0.0, 54.0, 8.5),
                     Visibility::default(),
                 ))
                 .with_children(|m| {
@@ -893,7 +901,7 @@ fn decorate_added_player(
                             baked.animator,
                             Mesh2d(baked.mesh),
                             MeshMaterial2d(baked.material),
-                            Transform::from_xyz(0.0, 36.0, 2.0),
+                            Transform::from_xyz(0.0, 39.0, 2.0),
                             world_layer.clone(),
                         ));
                     });
@@ -1591,9 +1599,9 @@ fn decorate_added_enemy_fighters(
             EnemyArchetype::FoundryBoss => "boss",
         };
         let foot_offset_y = if is_boss {
-            54.0 - body.half_extents.y
+            58.0 - body.half_extents.y
         } else {
-            36.0 - body.half_extents.y
+            39.0 - body.half_extents.y
         };
 
         if let Some(baked) = load_baked_sprite_handles(
@@ -1610,6 +1618,11 @@ fn decorate_added_enemy_fighters(
                         owner: entity,
                         jitter_phase: 0.0,
                         base_y: foot_offset_y,
+                        last_state_tag: 0,
+                        last_variant: 255,
+                        was_grounded: true,
+                        squash: Vec2::ONE,
+                        lean_rad: 0.0,
                     },
                     baked.animator,
                     Mesh2d(baked.mesh),
@@ -1660,7 +1673,7 @@ fn decorate_added_enemy_fighters(
             } else {
                 24.0
             };
-            let bar_y = body.half_extents.y + 12.0;
+            let bar_y = body.half_extents.y + 28.0;
             commands.entity(entity).with_children(|parent| {
                 parent.spawn((
                     Sprite {
@@ -2028,8 +2041,9 @@ fn drive_player_visuals_and_animations(
                     1.0,
                 );
             } else {
-                // Bright crisp cool-cyan P1 hero albedo tint so P1 never blends into hostile enemies!
-                mat.data.tint = Vec4::new(1.08, 1.24, 1.42, blink_alpha);
+                // Crisp true-color hero lighting preserving Levy's 1700s steel-navy coat,
+                // leather boots, and glowing cyan Rift Saber without color-washing!
+                mat.data.tint = Vec4::new(1.12, 1.15, 1.22, blink_alpha);
             }
             mat.data.fx_params.y = if in_hitstop && hitstun.is_some_and(Hitstun::is_active) {
                 0.85
@@ -2070,11 +2084,16 @@ fn drive_player_visuals_and_animations(
             animator.play(gd.animation_name());
         } else if let Some(sc) = smash_charge
             && sc.is_visibly_charging()
-            && let Some(kind) = sc.kind
+            && sc.kind.is_some()
         {
-            // Hold windup pose of the charging Smash attack!
-            animator.play(kind.animation_name());
-            animator.tick(dt * 0.15);
+            // Hold Levy's dramatic sky-high raised-saber coiled windup (`telegraph`) during Smash Charge!
+            if last_attack.last_move != sc.kind {
+                animator.play_restart("telegraph");
+                last_attack.last_move = sc.kind;
+            } else {
+                animator.play("telegraph");
+            }
+            animator.tick(dt * 0.85);
             continue;
         } else if in_counter || in_dive {
             animator.play("down_special");
@@ -2316,7 +2335,7 @@ fn update_respawn_angel_platform_and_p1_marker(
 ) {
     let bob = (time.elapsed_secs() * 5.2).sin() * 2.0;
     for mut m_tf in &mut markers {
-        m_tf.translation.y = (36.0 + bob).round();
+        m_tf.translation.y = (54.0 + bob).round();
     }
 
     let Ok(respawn) = players.single() else {
@@ -2731,41 +2750,74 @@ fn drive_enemy_fighter_visuals(
         let in_hitstop = hitstop.is_some_and(Hitstop::is_active);
         let in_hitstun = hitstun.is_some_and(Hitstun::is_active);
         let telegraph = fighter.is_telegraphing();
+        let grounded = body.state == MovementState::Grounded;
         let base_y = vis.base_y;
+
+        // Landing impact squash-and-stretch impulse!
+        if grounded && !vis.was_grounded {
+            vis.squash = Vec2::new(1.18, 0.82);
+        } else if !grounded && vis.was_grounded && body.velocity.y > 120.0 {
+            vis.squash = Vec2::new(0.86, 1.16);
+        }
+        vis.was_grounded = grounded;
+
+        // Target procedural squash & directional body lean so enemies feel weighty, aggressive, and alive!
+        let (target_squash, target_lean) = if in_hitstun {
+            let tumble = (-body.velocity.x * 0.0008).clamp(-0.32, 0.32);
+            (Vec2::new(0.92, 1.08), tumble)
+        } else if telegraph {
+            // Pull-back anticipation crouch & slight tremble before striking!
+            let vib = (time.elapsed_secs() * 52.0).sin() * 0.03;
+            (Vec2::new(1.08, 0.90), -body.facing * 0.14 + vib)
+        } else if matches!(fighter.state, EnemyAiState::Attacking { .. }) {
+            // Forward attack lunge stretch!
+            (Vec2::new(1.08, 0.94), body.facing * 0.13)
+        } else if !grounded {
+            let stretch = (body.velocity.y.abs() * 0.00028).clamp(0.0, 0.10);
+            (Vec2::new(1.0 - stretch * 0.7, 1.0 + stretch), body.facing * 0.06)
+        } else if body.speed() > 25.0 {
+            // Forward running lean into pursuit/patrol!
+            (Vec2::ONE, body.facing * 0.08)
+        } else {
+            (Vec2::ONE, 0.0)
+        };
+
+        let blend = (dt * 16.0).min(1.0);
+        vis.squash = vis.squash.lerp(target_squash, blend);
+        vis.lean_rad += (target_lean - vis.lean_rad) * blend;
 
         if in_hitstop {
             vis.jitter_phase += dt * 115.0;
             tf.translation.x = (vis.jitter_phase.sin() * 3.0).round();
             tf.translation.y = base_y + ((vis.jitter_phase * 1.6).cos() * 2.0).round();
         } else {
+            // Anchor squash cleanly at boot level so scaling never floats or sinks into floor!
+            let foot_comp = (vis.squash.y - 1.0) * (base_y * 0.55);
             tf.translation.x = 0.0;
-            tf.translation.y = base_y;
+            tf.translation.y = base_y + foot_comp;
+            tf.scale = Vec3::new(vis.squash.x, vis.squash.y, 1.0);
+            tf.rotation = Quat::from_rotation_z(vis.lean_rad);
         }
 
         if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
             let phase2 = boss.is_some_and(|b| b.phase >= 2);
+            // Preserve crisp true-color 2085 baked textures (white Strider, yellow Enforcer,
+            // chrome-violet Arc Weaver, charcoal-magenta Phantom, gunmetal-molten Vulcanus)!
             let base_enemy_tint = match fighter.archetype {
-                EnemyArchetype::LightStriker => Vec4::new(1.52, 0.58, 0.46, 1.0),
-                EnemyArchetype::HeavyBrawler => Vec4::new(1.62, 0.46, 0.34, 1.0),
-                EnemyArchetype::ArcaneZoner => Vec4::new(1.42, 0.48, 1.65, 1.0),
-                EnemyArchetype::ShadowAssassin => Vec4::new(1.55, 0.35, 1.05, 1.0),
-                EnemyArchetype::FoundryBoss => {
-                    if phase2 {
-                        let rage = 0.5 + 0.5 * (time.elapsed_secs() * 16.0).sin();
-                        Vec4::new(2.1 + rage * 0.75, 1.0 + rage * 0.45, 0.32, 1.0)
-                    } else {
-                        Vec4::new(1.65, 0.74, 0.36, 1.0)
-                    }
+                EnemyArchetype::FoundryBoss if phase2 => {
+                    let rage = 0.5 + 0.5 * (time.elapsed_secs() * 14.0).sin();
+                    Vec4::new(1.38 + rage * 0.45, 1.06 + rage * 0.18, 0.88, 1.0)
                 }
+                _ => Vec4::new(1.12, 1.12, 1.15, 1.0),
             };
             mat.data.fx_params.y = if in_hitstop { 1.0 } else { 0.0 };
             mat.data.tint = if telegraph {
-                let pulse = 0.6 + 0.4 * (time.elapsed_secs() * 28.0).sin();
+                let pulse = 0.5 + 0.5 * (time.elapsed_secs() * 30.0).sin();
                 match fighter.archetype {
-                    EnemyArchetype::ArcaneZoner => Vec4::new(2.2 + pulse, 0.65, 2.8 + pulse, 1.0),
-                    EnemyArchetype::ShadowAssassin => Vec4::new(2.5 + pulse, 0.45, 1.65, 1.0),
-                    EnemyArchetype::FoundryBoss => Vec4::new(2.9 + pulse, 1.25 + pulse * 0.4, 0.30, 1.0),
-                    _ => Vec4::new(2.2 + pulse, 0.75, 0.35, 1.0),
+                    EnemyArchetype::ArcaneZoner => Vec4::new(1.45 + pulse * 0.55, 1.05, 1.75 + pulse * 0.65, 1.0),
+                    EnemyArchetype::ShadowAssassin => Vec4::new(1.70 + pulse * 0.55, 0.95, 1.45 + pulse * 0.45, 1.0),
+                    EnemyArchetype::FoundryBoss => Vec4::new(1.90 + pulse * 0.75, 1.25 + pulse * 0.35, 0.72, 1.0),
+                    _ => Vec4::new(1.75 + pulse * 0.60, 1.18 + pulse * 0.28, 0.78, 1.0),
                 }
             } else if invuln.is_some_and(Invulnerable::is_active) {
                 let blink = if ((time.elapsed_secs() * 22.0) as u32).is_multiple_of(2) {
@@ -2784,48 +2836,85 @@ fn drive_enemy_fighter_visuals(
         }
 
         animator.flip_x = body.facing < 0.0;
+        let state_tag: u8 = if in_hitstun {
+            3
+        } else {
+            match fighter.state {
+                EnemyAiState::Attacking { .. } => 2,
+                EnemyAiState::Telegraph { .. } => 1,
+                _ if !grounded => 4,
+                _ => 0,
+            }
+        };
+        let state_changed = state_tag != vis.last_state_tag
+            || (state_tag == 2 && fighter.attack_variant != vis.last_variant);
+        vis.last_state_tag = state_tag;
+        vis.last_variant = fighter.attack_variant;
+
         if in_hitstun {
-            animator.play("hitstun");
+            if state_changed {
+                animator.play_restart("hitstun");
+            } else {
+                animator.play("hitstun");
+            }
         } else {
             match fighter.state {
                 EnemyAiState::Attacking { .. } => {
-                    if fighter.archetype == EnemyArchetype::FoundryBoss {
+                    let clip = if fighter.archetype == EnemyArchetype::FoundryBoss {
                         match fighter.attack_variant {
-                            0 => animator.play("f_smash"),
-                            1 => animator.play("down_special"),
-                            2 => animator.play("neutral_special"),
-                            6 => animator.play("sword_spin"),
-                            _ => animator.play("side_special"),
+                            0 => "f_smash",
+                            1 => "down_special",
+                            2 => "neutral_special",
+                            6 => "sword_spin",
+                            _ => "side_special",
                         }
                     } else {
                         match fighter.attack_variant {
-                            1 => animator.play("down_special"),    // HeavyBrawler seismic stomp
-                            2 => animator.play("neutral_special"), // ArcaneZoner orb cast
-                            3 => animator.play("side_special"),    // ShadowAssassin dash-through
-                            4 => animator.play("jab_2"),           // Rogue Striker 2nd cross-slash
-                            5 | 8 => animator.play("dodge_back"),  // Rogue backstep / Assassin smoke backflip
-                            6 => animator.play("sword_spin"),      // HeavyBrawler 360° whirlwind axe spin
-                            7 => animator.play("up_tilt"),         // ArcaneZoner Arcane Pillar cast
+                            1 => "down_special",    // Slag Enforcer seismic stomp
+                            2 => "neutral_special", // Arc Weaver plasma orb cast
+                            3 => "side_special",    // Phantom Interceptor dash-through blitz
+                            4 => "jab_2",           // Strider Drone 2nd rising cross-slash
+                            5 | 8 => "dodge_back",  // Strider evade / Phantom smoke backflip
+                            6 => "sword_spin",      // Slag Enforcer 360° whirlwind hammer spin
+                            7 => "up_tilt",         // Arc Weaver Arcane Pillar cast
                             _ => {
                                 if fighter.archetype == EnemyArchetype::HeavyBrawler {
-                                    animator.play("f_smash");
+                                    "f_smash"
                                 } else if fighter.archetype == EnemyArchetype::ShadowAssassin {
-                                    animator.play("jab_2");
+                                    "jab_2"
                                 } else {
-                                    animator.play("jab");
+                                    "jab"
                                 }
                             }
                         }
+                    };
+                    if state_changed {
+                        animator.play_restart(clip);
+                    } else {
+                        animator.play(clip);
                     }
                 }
                 EnemyAiState::Telegraph { .. } => {
-                    if fighter.archetype == EnemyArchetype::FoundryBoss {
-                        animator.play("guard");
+                    if state_changed {
+                        animator.play_restart("telegraph");
                     } else {
-                        animator.play("idle");
+                        animator.play("telegraph");
                     }
                 }
-                EnemyAiState::Chase if body.speed() > 18.0 => animator.play("run"),
+                _ if !grounded => {
+                    if body.velocity.y > 20.0 {
+                        animator.play("jump");
+                    } else {
+                        animator.play("fall");
+                    }
+                }
+                EnemyAiState::Patrol | EnemyAiState::Chase if body.speed() > 10.0 => {
+                    if body.speed() > 165.0 {
+                        animator.play("sprint");
+                    } else {
+                        animator.play("run");
+                    }
+                }
                 _ => animator.play("idle"),
             }
         }
@@ -3249,45 +3338,94 @@ fn handle_combat_visual_events(
                 heavy,
                 color_rgb,
             } => {
-                // Curved 5-segment glowing crescent blade sweep!
+                // High-impact 9-segment dual-layer tapered pixel-art Saber Crescent + blade sparks!
                 let base_dir_angle = if facing < 0.0 {
                     std::f32::consts::PI - angle_rad
                 } else {
                     angle_rad
                 };
-                let lifetime = if heavy { 0.17 } else { 0.12 };
-                let thickness = if heavy { 5.5 } else { 3.5 };
+                let lifetime = if heavy { 0.19 } else { 0.14 };
+                let outer_thick = if heavy { 8.0 } else { 5.5 };
+                let core_thick = if heavy { 3.5 } else { 2.4 };
                 let outer_color = Color::linear_rgb(color_rgb[0], color_rgb[1], color_rgb[2]);
                 let core_color = Color::linear_rgb(
-                    (color_rgb[0] + 2.2).min(5.6),
-                    (color_rgb[1] + 2.2).min(5.6),
-                    (color_rgb[2] + 2.2).min(5.6),
+                    (color_rgb[0] + 2.8).min(5.8),
+                    (color_rgb[1] + 2.8).min(5.8),
+                    (color_rgb[2] + 2.8).min(5.8),
                 );
-                let arc_r = radius * 0.68;
+                let arc_r = radius * 0.78;
+                let sweep_half = if heavy { 1.38 } else { 1.18 };
+                const SEGS: usize = 9;
 
-                for i in 0..5 {
-                    let frac = (i as f32 / 4.0) * 2.0 - 1.0; // -1.0 .. +1.0
-                    let seg_angle = base_dir_angle + frac * 1.05;
+                for i in 0..SEGS {
+                    let frac = (i as f32 / (SEGS - 1) as f32) * 2.0 - 1.0; // -1.0 .. +1.0
+                    let taper = (1.0 - frac * frac * 0.75).max(0.22);
+                    let seg_angle = base_dir_angle + frac * sweep_half;
                     let radial = Vec2::new(seg_angle.cos(), seg_angle.sin());
-                    let seg_pos = pos + radial * (arc_r * 0.55);
-                    let seg_len = (radius * (0.48 - frac.abs() * 0.16)).max(6.0);
+                    let seg_pos = pos + radial * (arc_r * 0.52);
+                    let seg_len = (radius * (0.42 * taper + 0.14)).max(5.0);
                     let tangent_rot = seg_angle + std::f32::consts::FRAC_PI_2;
-                    let color = if i == 2 { core_color } else { outer_color };
 
+                    // Outer plasma crescent ribbon
                     commands.spawn((
                         SlashArcSeg {
-                            velocity: radial * (if heavy { 105.0 } else { 72.0 }),
+                            velocity: radial * (if heavy { 115.0 } else { 82.0 }),
                             lifetime,
                             max_lifetime: lifetime,
                             base_len: seg_len,
                         },
                         Sprite {
-                            color,
-                            custom_size: Some(Vec2::new(seg_len, thickness)),
+                            color: outer_color,
+                            custom_size: Some(Vec2::new(seg_len, outer_thick * taper)),
                             ..default()
                         },
-                        Transform::from_xyz(seg_pos.x, seg_pos.y, 7.4)
+                        Transform::from_xyz(seg_pos.x, seg_pos.y, 7.35)
                             .with_rotation(Quat::from_rotation_z(tangent_rot)),
+                        world_layer.clone(),
+                    ));
+
+                    // Razor incandescent white-hot leading edge core on center 5 segments
+                    if (2..=6).contains(&i) {
+                        let core_pos = pos + radial * (arc_r * 0.62);
+                        commands.spawn((
+                            SlashArcSeg {
+                                velocity: radial * (if heavy { 130.0 } else { 94.0 }),
+                                lifetime: lifetime * 0.82,
+                                max_lifetime: lifetime * 0.82,
+                                base_len: seg_len * 0.92,
+                            },
+                            Sprite {
+                                color: core_color,
+                                custom_size: Some(Vec2::new(seg_len * 0.92, core_thick * taper)),
+                                ..default()
+                            },
+                            Transform::from_xyz(core_pos.x, core_pos.y, 7.50)
+                                .with_rotation(Quat::from_rotation_z(tangent_rot)),
+                            world_layer.clone(),
+                        ));
+                    }
+                }
+
+                // Crisp sparks peeling off the saber tip!
+                let spark_n = if heavy { 6 } else { 3 };
+                for s in 0..spark_n {
+                    let frac = (s as f32 / (spark_n - 1).max(1) as f32) * 2.0 - 1.0;
+                    let a = base_dir_angle + frac * 0.95;
+                    let dir = Vec2::new(a.cos(), a.sin());
+                    let p = pos + dir * (arc_r * 0.72);
+                    commands.spawn((
+                        HitSpark {
+                            velocity: dir * (if heavy { 190.0 } else { 135.0 }),
+                            lifetime: 0.16,
+                            max_lifetime: 0.16,
+                        },
+                        Sprite {
+                            color: if s % 2 == 0 { core_color } else { outer_color },
+                            custom_size: Some(Vec2::new(if heavy { 6.0 } else { 4.0 }, 2.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(p.x, p.y, 7.6)
+                            .with_rotation(Quat::from_rotation_z(a)),
                         world_layer.clone(),
                     ));
                 }

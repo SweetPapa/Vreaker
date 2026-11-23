@@ -184,6 +184,10 @@ pub struct PlayerIntent {
     pub melee_just_pressed: bool,
     pub melee_held: bool,
     pub melee_just_released: bool,
+    pub heavy_just_pressed: bool,
+    pub heavy_held: bool,
+    pub c_stick_axis: Vec2,
+    pub c_stick_just_flicked: bool,
     pub special_just_pressed: bool,
     pub special_held: bool,
     pub buster_just_pressed: bool,
@@ -197,6 +201,8 @@ pub struct PlayerIntent {
     prev_boost_held: bool,
     prev_guard_held: bool,
     prev_melee_held: bool,
+    prev_heavy_held: bool,
+    prev_c_stick_active: bool,
     prev_special_held: bool,
     prev_buster_held: bool,
     prev_taunt_held: bool,
@@ -379,6 +385,10 @@ fn sync_player_intent_from_actions(
             intent.melee_just_pressed = false;
             intent.melee_held = false;
             intent.melee_just_released = false;
+            intent.heavy_just_pressed = false;
+            intent.heavy_held = false;
+            intent.c_stick_axis = Vec2::ZERO;
+            intent.c_stick_just_flicked = false;
             intent.special_just_pressed = false;
             intent.special_held = false;
             intent.buster_just_pressed = false;
@@ -506,6 +516,14 @@ fn sync_player_intent_from_actions(
         };
 
         let melee_held = actions.pressed(&PlayerAction::MeleeAttack);
+        let heavy_held = actions.pressed(&PlayerAction::HeavySmash);
+        let raw_c_stick = actions.clamped_axis_pair(&PlayerAction::SmashStick);
+        let c_stick_active = raw_c_stick.length_squared() >= 0.52 * 0.52;
+        let c_stick_axis = if c_stick_active {
+            raw_c_stick
+        } else {
+            Vec2::ZERO
+        };
         let special_held = actions.pressed(&PlayerAction::Special);
         let buster_held = actions.pressed(&PlayerAction::Buster);
         let taunt_held = actions.pressed(&PlayerAction::Taunt);
@@ -526,6 +544,10 @@ fn sync_player_intent_from_actions(
         intent.melee_just_pressed = melee_held && !intent.prev_melee_held;
         intent.melee_held = melee_held;
         intent.melee_just_released = !melee_held && intent.prev_melee_held;
+        intent.heavy_just_pressed = heavy_held && !intent.prev_heavy_held;
+        intent.heavy_held = heavy_held;
+        intent.c_stick_axis = c_stick_axis;
+        intent.c_stick_just_flicked = c_stick_active && !intent.prev_c_stick_active;
         intent.special_just_pressed = special_held && !intent.prev_special_held;
         intent.special_held = special_held;
         intent.buster_just_pressed = buster_held && !intent.prev_buster_held;
@@ -540,6 +562,8 @@ fn sync_player_intent_from_actions(
         intent.prev_boost_held = boost_held;
         intent.prev_guard_held = guard_held;
         intent.prev_melee_held = melee_held;
+        intent.prev_heavy_held = heavy_held;
+        intent.prev_c_stick_active = c_stick_active;
         intent.prev_special_held = special_held;
         intent.prev_buster_held = buster_held;
         intent.prev_taunt_held = taunt_held;

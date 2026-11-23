@@ -94,6 +94,7 @@ DEFAULT_ANIMATION_PRESETS: list[dict[str, Any]] = [
     {
         "key": "dash_attack",
         "candidates": [
+            "Dash_Slash",
             "1H_Melee_Attack_Stab",
             "Melee_1H_Attack_Stab",
             "Unarmed_Melee_Attack_Kick",
@@ -115,6 +116,7 @@ DEFAULT_ANIMATION_PRESETS: list[dict[str, Any]] = [
     {
         "key": "f_air",
         "candidates": [
+            "Air_Forward_Slash",
             "1H_Melee_Attack_Slice_Diagonal",
             "Melee_1H_Attack_Slice_Diagonal",
             "2H_Melee_Attack_Slice",
@@ -427,6 +429,13 @@ DEFAULT_ANIMATION_PRESETS: list[dict[str, Any]] = [
         "fps": 12.0,
         "looping": False,
     },
+    {
+        "key": "telegraph",
+        "candidates": ["Telegraph", "Blocking", "Block", "Idle"],
+        "frames": 5,
+        "fps": 12.0,
+        "looping": False,
+    },
 ]
 
 # Logical bone slots required by SPEC.MD Section 3.3 mapped to common rig naming conventions.
@@ -635,10 +644,9 @@ def set_armature_action(armature: bpy.types.Object, action: bpy.types.Action) ->
     armature.animation_data.action = action
     # Clear any NLA overrides so the assigned action always evaluates cleanly.
     armature.animation_data.use_nla = False
-    # Blender 5.x slotted actions: bind the first compatible slot if unset.
+    # Blender 5.x slotted actions: always bind the action's primary slot explicitly.
     if hasattr(action, "slots") and len(action.slots) > 0:
-        if getattr(armature.animation_data, "action_slot", None) is None:
-            armature.animation_data.action_slot = action.slots[0]
+        armature.animation_data.action_slot = action.slots[0]
 
 
 def sample_action_frames(action: bpy.types.Action | None, count: int, looping: bool) -> list[float]:
@@ -679,6 +687,8 @@ def compute_world_bounds(
 
         depsgraph.update()
         for obj in meshes:
+            if "slashsmear" in obj.name.lower():
+                continue
             eval_obj = obj.evaluated_get(depsgraph)
             for corner in eval_obj.bound_box:
                 world_c = eval_obj.matrix_world @ Vector(corner)
@@ -1149,10 +1159,18 @@ def bake(args: argparse.Namespace) -> None:
         auto_emission = not args.no_auto_emission
         for obj in meshes:
             orig_list = original_mats[obj]
-            orig_primary = orig_list[0] if orig_list else None
-            emis_mat = build_emission_material(obj, orig_primary, auto_emission=auto_emission)
+            # If ANY material slot on this mesh carries native emission (e.g. a saber's plasma
+            # cutting edge or a character body's Rift Diamond / visor glow map), preserve each
+            # slot's exact native emission instead of overriding with procedural auto-emission.
+            has_any_native = any(material_has_native_emission(m) for m in orig_list)
+            slot_auto = auto_emission and not has_any_native
             for i in range(len(obj.data.materials)):
-                obj.data.materials[i] = emis_mat
+                orig_slot = orig_list[i] if i < len(orig_list) else None
+                obj.data.materials[i] = build_emission_material(
+                    obj,
+                    orig_slot,
+                    auto_emission=slot_auto,
+                )
 
         set_view_transform_safe(scene, "Standard")
         render_pass(

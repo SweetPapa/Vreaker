@@ -28,6 +28,7 @@ use crate::physics::{KinematicBody, MovementState, PlayerIntent};
 use crate::player::{Player, PlayerSpriteVisual};
 use crate::rendering::SpriteSheetAnimator;
 use crate::state::{AppState, GameStateCommand, StateTransitionSet};
+use crate::story::{STAGE1_RELIC_NAMES, SpeakerId, StoryCommsState};
 
 const COLOR_PANEL_BG: Color = Color::srgba(0.05, 0.07, 0.12, 0.92);
 const COLOR_OVERLAY_BG: Color = Color::srgba(0.02, 0.03, 0.06, 0.72);
@@ -58,6 +59,27 @@ struct PromptIconAssets {
     key_e: Option<Handle<Image>>,
     key_q: Option<Handle<Image>>,
     key_esc: Option<Handle<Image>>,
+}
+
+/// Story Bible pixel-art portraits and Title Screen key art loaded gracefully from `assets/ui/`.
+#[derive(Resource, Default, Clone)]
+struct StoryUiAssets {
+    title_key_art: Option<Handle<Image>>,
+    portrait_levy: Option<Handle<Image>>,
+    portrait_mina: Option<Handle<Image>>,
+    portrait_barnaby: Option<Handle<Image>>,
+    portrait_vulcanus: Option<Handle<Image>>,
+}
+
+impl StoryUiAssets {
+    fn portrait_for(&self, speaker: SpeakerId) -> Option<Handle<Image>> {
+        match speaker {
+            SpeakerId::Levy => self.portrait_levy.clone(),
+            SpeakerId::Mina => self.portrait_mina.clone(),
+            SpeakerId::Barnaby => self.portrait_barnaby.clone(),
+            SpeakerId::Vulcanus => self.portrait_vulcanus.clone(),
+        }
+    }
 }
 
 /// Optional UI audio handles loaded gracefully from `assets/audio/ui/`.
@@ -177,6 +199,19 @@ struct BossNameText;
 #[derive(Component)]
 struct BossHpFillBar;
 
+/// Container for the live Story Bible comms radio transmission overlay.
+#[derive(Component)]
+struct StoryCommsOverlay;
+
+#[derive(Component)]
+struct StoryCommsPortraitImage;
+
+#[derive(Component)]
+struct StoryCommsSpeakerText;
+
+#[derive(Component)]
+struct StoryCommsBodyText;
+
 /// Persistent modal overlay for the 4-step interactive D-Pad Calibration Wizard (`F2`).
 #[derive(Component)]
 struct DpadWizardOverlay;
@@ -194,6 +229,7 @@ impl Plugin for GameUiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<UiAudioAssets>()
             .init_resource::<PromptIconAssets>()
+            .init_resource::<StoryUiAssets>()
             .init_resource::<MenuFocus>()
             .add_observer(handle_menu_button_activate)
             .add_systems(
@@ -201,6 +237,7 @@ impl Plugin for GameUiPlugin {
                 (
                     load_ui_audio_gracefully,
                     load_prompt_icons_gracefully,
+                    load_story_ui_assets_gracefully,
                     spawn_dpad_wizard_overlay,
                     spawn_moveset_guide_overlay,
                 ),
@@ -239,6 +276,7 @@ impl Plugin for GameUiPlugin {
                     update_zone_and_ko_banner,
                     update_encounter_and_boss_hud,
                     update_combo_and_run_timer_hud,
+                    update_story_comms_hud,
                 )
                     .run_if(in_state(AppState::Playing)),
             );
@@ -280,6 +318,17 @@ fn load_prompt_icons_gracefully(
     icons.key_e = load_prompt_icon(&asset_server, "ui/prompts/keyboard_e.png");
     icons.key_q = load_prompt_icon(&asset_server, "ui/prompts/keyboard_q.png");
     icons.key_esc = load_prompt_icon(&asset_server, "ui/prompts/keyboard_escape.png");
+}
+
+fn load_story_ui_assets_gracefully(
+    asset_server: Res<AssetServer>,
+    mut story_ui: ResMut<StoryUiAssets>,
+) {
+    story_ui.title_key_art = load_prompt_icon(&asset_server, "ui/title_key_art.png");
+    story_ui.portrait_levy = load_prompt_icon(&asset_server, "ui/portraits/levy.png");
+    story_ui.portrait_mina = load_prompt_icon(&asset_server, "ui/portraits/mina.png");
+    story_ui.portrait_barnaby = load_prompt_icon(&asset_server, "ui/portraits/barnaby.png");
+    story_ui.portrait_vulcanus = load_prompt_icon(&asset_server, "ui/portraits/vulcanus.png");
 }
 
 fn in_menu_state(state: Res<State<AppState>>) -> bool {
@@ -344,6 +393,7 @@ fn spawn_title_screen(
     mut commands: Commands,
     mut focus: ResMut<MenuFocus>,
     icons: Res<PromptIconAssets>,
+    story_ui: Res<StoryUiAssets>,
     dpad_cal: Res<DpadCalibration>,
 ) {
     focus.index = 0;
@@ -360,25 +410,47 @@ fn spawn_title_screen(
                 flex_direction: FlexDirection::Column,
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
-                row_gap: Val::Px(24.0),
-                padding: UiRect::all(Val::Px(32.0)),
+                row_gap: Val::Px(20.0),
+                padding: UiRect::all(Val::Px(28.0)),
                 ..default()
             },
             BackgroundColor(COLOR_OVERLAY_BG),
         ))
         .with_children(|root| {
+            // Full-bleed pixel-art Title Key Art backdrop (Levy vs. Iron Titan: Vulcanus)
+            if let Some(ref key_art) = story_ui.title_key_art {
+                root.spawn((
+                    ImageNode::new(key_art.clone()),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        width: Val::Percent(100.0),
+                        height: Val::Percent(100.0),
+                        ..default()
+                    },
+                ));
+                root.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        width: Val::Percent(100.0),
+                        height: Val::Percent(100.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.02, 0.03, 0.07, 0.48)),
+                ));
+            }
+
             // Main Title Card
             root.spawn((
                 Node {
                     flex_direction: FlexDirection::Column,
                     align_items: AlignItems::Center,
-                    row_gap: Val::Px(12.0),
-                    padding: UiRect::axes(Val::Px(42.0), Val::Px(28.0)),
+                    row_gap: Val::Px(10.0),
+                    padding: UiRect::axes(Val::Px(42.0), Val::Px(24.0)),
                     border: UiRect::all(Val::Px(2.0)),
                     border_radius: BorderRadius::all(Val::Px(6.0)),
                     ..default()
                 },
-                BackgroundColor(COLOR_PANEL_BG),
+                BackgroundColor(Color::srgba(0.04, 0.06, 0.11, 0.88)),
                 BorderColor::all(COLOR_ACCENT_CYAN),
             ))
             .with_children(|card| {
@@ -392,9 +464,9 @@ fn spawn_title_screen(
                 ));
 
                 card.spawn((
-                    Text::new("MEGA MAN X PRECISION   •   SUPER SMASH BROS. IMPACT"),
+                    Text::new("1700s GRIT   •   2085 CHROME   •   FIVE ASPECT DIAMONDS"),
                     TextFont {
-                        font_size: FontSize::Px(14.0),
+                        font_size: FontSize::Px(13.0),
                         ..default()
                     },
                     TextColor(COLOR_ACCENT_AMBER),
@@ -450,11 +522,12 @@ fn spawn_title_screen(
                 ));
 
                 for (label, pad_icon, key_icon, hint) in [
-                    ("MOVE / FAST-FALL", &icons.stick_l, &None, "Stick / D-Pad  |  WASD / Arrows"),
+                    ("MOVE / FAST-FALL", &icons.stick_l, &None, "Left Stick / D-Pad  |  WASD / Arrows"),
                     ("JUMP / DOUBLE / WALL-JUMP", &icons.xbox_a, &icons.key_space, "A (Cross)  |  Space / Z"),
-                    ("MELEE / CHARGEABLE SMASH", &icons.xbox_x, &icons.key_j, "X  |  J / X  (Tap=Tilt, Hold=Smash!)"),
+                    ("RIFT SABER (3-HIT / TILTS)", &icons.xbox_x, &icons.key_j, "X  |  J / X  (Instant Combo + Up/Down/Air Slashes!)"),
+                    ("HEAVY / CHARGEABLE SMASH", &icons.stick_l, &icons.key_j, "Right Stick (C-Stick)  |  U / V  (Hold=155% Charge!)"),
                     ("4-WAY SPECIALS / SWORD SPIN", &icons.xbox_b, &icons.key_k, "B  |  K / C  (Up-B=360° Spin, Down-B=Counter/Dive)"),
-                    ("MEGA BUSTER (HOLD=CHG)", &icons.xbox_rb, &icons.key_l, "RB / Y  |  L / Shift"),
+                    ("RIFT BUSTER (HOLD=CHG)", &icons.xbox_rb, &icons.key_l, "RB / Y  |  L / Shift"),
                     ("DASH / SPIN CHARGE", &icons.xbox_rt, &icons.key_e, "RT / R2  |  E / Ctrl"),
                     ("SHIELD / ROLL / SPOT-DODGE", &icons.xbox_lb, &icons.key_q, "LB / LT + Dir  |  Q / F + Dir  (Config in Pause)"),
                     ("TAUNT / PAUSE", &icons.xbox_menu, &icons.key_esc, "Select=Taunt, Start=Pause  |  T / Esc"),
@@ -483,7 +556,11 @@ fn spawn_title_screen(
         });
 }
 
-fn spawn_playing_hud(mut commands: Commands, icons: Res<PromptIconAssets>) {
+fn spawn_playing_hud(
+    mut commands: Commands,
+    icons: Res<PromptIconAssets>,
+    story_ui: Res<StoryUiAssets>,
+) {
     commands
         .spawn((
             Name::new("PlayingHudRoot"),
@@ -571,10 +648,10 @@ fn spawn_playing_hud(mut commands: Commands, icons: Res<PromptIconAssets>) {
                             BossHudContainer,
                             Node {
                                 display: Display::None,
-                                flex_direction: FlexDirection::Column,
+                                flex_direction: FlexDirection::Row,
                                 align_items: AlignItems::Center,
-                                row_gap: Val::Px(4.0),
-                                padding: UiRect::axes(Val::Px(14.0), Val::Px(8.0)),
+                                column_gap: Val::Px(10.0),
+                                padding: UiRect::axes(Val::Px(12.0), Val::Px(8.0)),
                                 border: UiRect::all(Val::Px(2.0)),
                                 border_radius: BorderRadius::all(Val::Px(4.0)),
                                 ..default()
@@ -582,36 +659,158 @@ fn spawn_playing_hud(mut commands: Commands, icons: Res<PromptIconAssets>) {
                             BackgroundColor(COLOR_PANEL_BG),
                             BorderColor::all(Color::srgb(0.95, 0.32, 0.18)),
                         ))
-                        .with_children(|boss_box| {
-                            boss_box.spawn((
-                                BossNameText,
-                                Text::new("IRON TITAN: VULCANUS  •  PHASE 1"),
-                                TextFont {
-                                    font_size: FontSize::Px(13.0),
+                        .with_children(|boss_row| {
+                            if let Some(ref v_port) = story_ui.portrait_vulcanus {
+                                boss_row
+                                    .spawn((
+                                        Node {
+                                            width: Val::Px(42.0),
+                                            height: Val::Px(42.0),
+                                            border: UiRect::all(Val::Px(1.0)),
+                                            ..default()
+                                        },
+                                        BorderColor::all(COLOR_ACCENT_AMBER),
+                                    ))
+                                    .with_children(|frame| {
+                                        frame.spawn((
+                                            ImageNode::new(v_port.clone()),
+                                            Node {
+                                                width: Val::Percent(100.0),
+                                                height: Val::Percent(100.0),
+                                                ..default()
+                                            },
+                                        ));
+                                    });
+                            }
+                            boss_row
+                                .spawn(Node {
+                                    flex_direction: FlexDirection::Column,
+                                    align_items: AlignItems::Center,
+                                    row_gap: Val::Px(4.0),
                                     ..default()
-                                },
-                                TextColor(COLOR_ACCENT_AMBER),
-                            ));
-                            boss_box
+                                })
+                                .with_children(|boss_box| {
+                                    boss_box.spawn((
+                                        BossNameText,
+                                        Text::new("IRON TITAN: VULCANUS  •  PHASE 1"),
+                                        TextFont {
+                                            font_size: FontSize::Px(13.0),
+                                            ..default()
+                                        },
+                                        TextColor(COLOR_ACCENT_AMBER),
+                                    ));
+                                    boss_box
+                                        .spawn((
+                                            Node {
+                                                width: Val::Px(360.0),
+                                                height: Val::Px(14.0),
+                                                border: UiRect::all(Val::Px(1.0)),
+                                                ..default()
+                                            },
+                                            BackgroundColor(Color::srgb(0.08, 0.05, 0.08)),
+                                            BorderColor::all(COLOR_BORDER_IDLE),
+                                        ))
+                                        .with_children(|bar_bg| {
+                                            bar_bg.spawn((
+                                                BossHpFillBar,
+                                                Node {
+                                                    width: Val::Percent(100.0),
+                                                    height: Val::Percent(100.0),
+                                                    ..default()
+                                                },
+                                                BackgroundColor(Color::srgb(0.96, 0.24, 0.20)),
+                                            ));
+                                        });
+                                });
+                        });
+
+                    // Live Story Bible Comms Radio Panel (Levy, Mina, Barnaby, Vulcanus)
+                    center
+                        .spawn((
+                            StoryCommsOverlay,
+                            Node {
+                                display: Display::None,
+                                flex_direction: FlexDirection::Row,
+                                align_items: AlignItems::Center,
+                                column_gap: Val::Px(12.0),
+                                max_width: Val::Px(560.0),
+                                padding: UiRect::axes(Val::Px(12.0), Val::Px(9.0)),
+                                border: UiRect::all(Val::Px(2.0)),
+                                border_radius: BorderRadius::all(Val::Px(5.0)),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgba(0.03, 0.05, 0.10, 0.94)),
+                            BorderColor::all(COLOR_ACCENT_CYAN),
+                        ))
+                        .with_children(|comms| {
+                            comms
                                 .spawn((
                                     Node {
-                                        width: Val::Px(380.0),
-                                        height: Val::Px(14.0),
+                                        width: Val::Px(58.0),
+                                        height: Val::Px(58.0),
+                                        flex_shrink: 0.0,
                                         border: UiRect::all(Val::Px(1.0)),
                                         ..default()
                                     },
-                                    BackgroundColor(Color::srgb(0.08, 0.05, 0.08)),
-                                    BorderColor::all(COLOR_BORDER_IDLE),
+                                    BorderColor::all(COLOR_ACCENT_CYAN),
                                 ))
-                                .with_children(|bar_bg| {
-                                    bar_bg.spawn((
-                                        BossHpFillBar,
+                                .with_children(|pframe| {
+                                    let default_img = story_ui
+                                        .portrait_levy
+                                        .clone()
+                                        .unwrap_or_default();
+                                    pframe.spawn((
+                                        StoryCommsPortraitImage,
+                                        ImageNode::new(default_img),
                                         Node {
                                             width: Val::Percent(100.0),
                                             height: Val::Percent(100.0),
                                             ..default()
                                         },
-                                        BackgroundColor(Color::srgb(0.96, 0.24, 0.20)),
+                                    ));
+                                });
+
+                            comms
+                                .spawn(Node {
+                                    flex_direction: FlexDirection::Column,
+                                    row_gap: Val::Px(4.0),
+                                    max_width: Val::Px(460.0),
+                                    ..default()
+                                })
+                                .with_children(|col| {
+                                    col.spawn(Node {
+                                        width: Val::Percent(100.0),
+                                        justify_content: JustifyContent::SpaceBetween,
+                                        column_gap: Val::Px(12.0),
+                                        ..default()
+                                    })
+                                    .with_children(|hdr| {
+                                        hdr.spawn((
+                                            StoryCommsSpeakerText,
+                                            Text::new("LEVY"),
+                                            TextFont {
+                                                font_size: FontSize::Px(11.0),
+                                                ..default()
+                                            },
+                                            TextColor(COLOR_ACCENT_CYAN),
+                                        ));
+                                        hdr.spawn((
+                                            Text::new("[TAB / SELECT: NEXT]"),
+                                            TextFont {
+                                                font_size: FontSize::Px(10.0),
+                                                ..default()
+                                            },
+                                            TextColor(COLOR_TEXT_MUTED),
+                                        ));
+                                    });
+                                    col.spawn((
+                                        StoryCommsBodyText,
+                                        Text::new(""),
+                                        TextFont {
+                                            font_size: FontSize::Px(13.0),
+                                            ..default()
+                                        },
+                                        TextColor(COLOR_TEXT_PRIMARY),
                                     ));
                                 });
                         });
@@ -724,8 +923,10 @@ fn spawn_playing_hud(mut commands: Commands, icons: Res<PromptIconAssets>) {
                                 cards
                                     .spawn((
                                         Node {
-                                            flex_direction: FlexDirection::Column,
-                                            padding: UiRect::axes(Val::Px(16.0), Val::Px(10.0)),
+                                            flex_direction: FlexDirection::Row,
+                                            align_items: AlignItems::Center,
+                                            column_gap: Val::Px(10.0),
+                                            padding: UiRect::axes(Val::Px(12.0), Val::Px(8.0)),
                                             border: UiRect::all(Val::Px(2.0)),
                                             border_radius: BorderRadius::all(Val::Px(4.0)),
                                             ..default()
@@ -733,24 +934,51 @@ fn spawn_playing_hud(mut commands: Commands, icons: Res<PromptIconAssets>) {
                                         BackgroundColor(COLOR_PANEL_BG),
                                         BorderColor::all(COLOR_ACCENT_CYAN),
                                     ))
-                                    .with_children(|pct| {
-                                        pct.spawn((
-                                            Text::new("P1  BREAKER"),
-                                            TextFont {
-                                                font_size: FontSize::Px(11.0),
-                                                ..default()
-                                            },
-                                            TextColor(COLOR_TEXT_MUTED),
-                                        ));
-                                        pct.spawn((
-                                            PlayerPercentText,
-                                            Text::new("0%"),
-                                            TextFont {
-                                                font_size: FontSize::Px(32.0),
-                                                ..default()
-                                            },
-                                            TextColor(COLOR_TEXT_PRIMARY),
-                                        ));
+                                    .with_children(|card| {
+                                        if let Some(ref levy_img) = story_ui.portrait_levy {
+                                            card.spawn((
+                                                Node {
+                                                    width: Val::Px(52.0),
+                                                    height: Val::Px(52.0),
+                                                    border: UiRect::all(Val::Px(1.0)),
+                                                    ..default()
+                                                },
+                                                BorderColor::all(COLOR_ACCENT_CYAN),
+                                            ))
+                                            .with_children(|pf| {
+                                                pf.spawn((
+                                                    ImageNode::new(levy_img.clone()),
+                                                    Node {
+                                                        width: Val::Percent(100.0),
+                                                        height: Val::Percent(100.0),
+                                                        ..default()
+                                                    },
+                                                ));
+                                            });
+                                        }
+                                        card.spawn(Node {
+                                            flex_direction: FlexDirection::Column,
+                                            ..default()
+                                        })
+                                        .with_children(|pct| {
+                                            pct.spawn((
+                                                Text::new("P1  LEVY"),
+                                                TextFont {
+                                                    font_size: FontSize::Px(11.0),
+                                                    ..default()
+                                                },
+                                                TextColor(COLOR_ACCENT_CYAN),
+                                            ));
+                                            pct.spawn((
+                                                PlayerPercentText,
+                                                Text::new("0%"),
+                                                TextFont {
+                                                    font_size: FontSize::Px(32.0),
+                                                    ..default()
+                                                },
+                                                TextColor(COLOR_TEXT_PRIMARY),
+                                            ));
+                                        });
                                     });
 
                                 cards
@@ -1055,6 +1283,8 @@ fn spawn_victory_screen(
     score: Res<ArenaScore>,
     combo: Res<ComboTracker>,
     run_timer: Res<StageRunTimer>,
+    comms: Res<StoryCommsState>,
+    story_ui: Res<StoryUiAssets>,
 ) {
     focus.index = 0;
     focus.count = 2;
@@ -1064,6 +1294,19 @@ fn spawn_victory_screen(
     let secs = (total % 60.0).floor() as u32;
     let cs = (total.fract() * 100.0).floor() as u32;
     let rank = score.compute_stage_rank(total, combo.best_hits);
+
+    let keepsakes_summary: String = STAGE1_RELIC_NAMES
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            if comms.found_relics[i] {
+                format!("[X] {name}")
+            } else {
+                format!("[ ] {name}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("   •   ");
 
     commands
         .spawn((
@@ -1083,8 +1326,8 @@ fn spawn_victory_screen(
                 Node {
                     flex_direction: FlexDirection::Column,
                     align_items: AlignItems::Center,
-                    row_gap: Val::Px(14.0),
-                    padding: UiRect::axes(Val::Px(48.0), Val::Px(34.0)),
+                    row_gap: Val::Px(12.0),
+                    padding: UiRect::axes(Val::Px(44.0), Val::Px(28.0)),
                     border: UiRect::all(Val::Px(2.0)),
                     border_radius: BorderRadius::all(Val::Px(6.0)),
                     ..default()
@@ -1093,16 +1336,56 @@ fn spawn_victory_screen(
                 BorderColor::all(COLOR_ACCENT_CYAN),
             ))
             .with_children(|card| {
+                // Levy & Mina Victory Portraits Row
+                if story_ui.portrait_levy.is_some() || story_ui.portrait_mina.is_some() {
+                    card.spawn(Node {
+                        flex_direction: FlexDirection::Row,
+                        column_gap: Val::Px(14.0),
+                        align_items: AlignItems::Center,
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        for (img_opt, border_col) in [
+                            (&story_ui.portrait_levy, COLOR_ACCENT_CYAN),
+                            (&story_ui.portrait_mina, COLOR_ACCENT_AMBER),
+                        ] {
+                            if let Some(img) = img_opt {
+                                row.spawn((
+                                    Node {
+                                        width: Val::Px(64.0),
+                                        height: Val::Px(64.0),
+                                        border: UiRect::all(Val::Px(2.0)),
+                                        ..default()
+                                    },
+                                    BorderColor::all(border_col),
+                                ))
+                                .with_children(|pf| {
+                                    pf.spawn((
+                                        ImageNode::new(img.clone()),
+                                        Node {
+                                            width: Val::Percent(100.0),
+                                            height: Val::Percent(100.0),
+                                            ..default()
+                                        },
+                                    ));
+                                });
+                            }
+                        }
+                    });
+                }
+
                 card.spawn((
                     Text::new(format!("STAGE 1 CLEAR!   •   RANK  {rank}")),
                     TextFont {
-                        font_size: FontSize::Px(42.0),
+                        font_size: FontSize::Px(40.0),
                         ..default()
                     },
                     TextColor(COLOR_ACCENT_CYAN),
                 ));
                 card.spawn((
-                    Text::new("THE FOUNDRY CITADEL CONQUERED  •  VULCANUS DEFEATED"),
+                    Text::new(
+                        "FORGE DIAMOND RECOVERED  (1 / 4 ASPECT DIAMONDS)  •  VULCANUS DEFEATED",
+                    ),
                     TextFont {
                         font_size: FontSize::Px(14.0),
                         ..default()
@@ -1111,7 +1394,7 @@ fn spawn_victory_screen(
                 ));
                 card.spawn((
                     Text::new(format!(
-                        "TIME: {mins:02}:{secs:02}.{cs:02}  |  KOs: {}  |  BEST COMBO: {}  |  CORES: {}/{}  |  RELICS: {}/{}",
+                        "TIME: {mins:02}:{secs:02}.{cs:02}  |  KOs: {}  |  BEST COMBO: {}  |  CORES: {}/{}  |  KEEPSAKES: {}/{}",
                         score.ko_count,
                         combo.best_hits,
                         score.cores_collected,
@@ -1125,9 +1408,31 @@ fn spawn_victory_screen(
                     },
                     TextColor(COLOR_TEXT_PRIMARY),
                 ));
+                card.spawn((
+                    Text::new(format!("1700s KEEPSAKES:  {keepsakes_summary}")),
+                    TextFont {
+                        font_size: FontSize::Px(11.0),
+                        ..default()
+                    },
+                    TextColor(COLOR_TEXT_MUTED),
+                ));
+
+                let epilogue = if comms.all_stage1_relics_found() || score.relics_collected >= 3 {
+                    "MINA: \"All three 1700s keepsakes intact... Alright, cowboy—maybe you really did fall out of history. Next stop: The Cryo Conduit.\""
+                } else {
+                    "LEVY: \"One Diamond down, three to go. Hold on back home—I'm coming.\""
+                };
+                card.spawn((
+                    Text::new(epilogue),
+                    TextFont {
+                        font_size: FontSize::Px(12.0),
+                        ..default()
+                    },
+                    TextColor(COLOR_ACCENT_CYAN),
+                ));
 
                 card.spawn(Node {
-                    margin: UiRect::top(Val::Px(14.0)),
+                    margin: UiRect::top(Val::Px(10.0)),
                     flex_direction: FlexDirection::Column,
                     align_items: AlignItems::Center,
                     row_gap: Val::Px(12.0),
@@ -1245,10 +1550,10 @@ fn spawn_moveset_guide_overlay(mut commands: Commands) {
                 ));
 
                 for (title, detail) in [
-                    ("3-HIT JAB COMBO", "Neutral + Melee (X / J) x3  ->  Slice -> Cross Slash -> Breaker Thrust!"),
-                    ("UP-TILT / DOWN-TILT", "Quick Tap Up/Down + Melee  ->  Fast juggle & low sweep combo starters"),
-                    ("CHARGEABLE F/U/D-SMASH", "Hold Side/Up/Down + Melee (or Boost+Dir+Melee)  ->  Charges up to 155%! Down-Smash sweeps 360°!"),
-                    ("5-WAY AERIALS", "In Air + Melee: N-Air (360° Spin), F-Air, B-Air (Kill), U-Air, D-Air (Meteor Spike + Bounce!)"),
+                    ("3-HIT RIFT SABER COMBO", "Tap Melee (X / J) x3 (standing or moving!) -> Rift Slash -> Rising Cross -> Breaker Cleave!"),
+                    ("INSTANT UP / DOWN-TILTS", "Up/Down + Melee (X / J) -> Zero-lag 180° Overhead Moon Crescent & Low Ankle Saber Sweep"),
+                    ("CHARGEABLE F/U/D-SMASH", "Right Stick (C-Stick), U / V (hold to charge 155%!), or Boost + Dir + Melee!"),
+                    ("5-WAY AERIAL SLASHES", "In Air + Melee or C-Stick: N-Air (360° Spin), F-Air, B-Air (Kill), U-Air, D-Air (Meteor Spike!)"),
                     ("UP-B: SWORD SPIN", "Grounded Up + Special (B/K): 360° HURRICANE SWORD SPIN!  |  Airborne Up-B: Rising Cyclone Recovery!"),
                     ("NEUTRAL / SIDE / DOWN-B", "Neutral-B: Breaker Wave  |  Side-B: Plasma Blitz  |  Down-B: Aegis Counter (Ground) / Meteor Dive (Air)"),
                     ("SHIELD / ROLL / SPOT / AIR", "Hold Shield + Left/Right = Roll-Dodge  |  Shield + Down = Spot-Dodge  |  Air Shield = Air-Dodge"),
@@ -1974,6 +2279,47 @@ fn update_encounter_and_boss_hud(
                 Color::srgb(0.96, 0.24, 0.20)
             });
         }
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn update_story_comms_hud(
+    comms: Res<StoryCommsState>,
+    story_ui: Res<StoryUiAssets>,
+    mut overlays: Query<(&mut Node, &mut BorderColor), With<StoryCommsOverlay>>,
+    mut portraits: Query<&mut ImageNode, With<StoryCommsPortraitImage>>,
+    mut speakers: Query<
+        (&mut Text, &mut TextColor),
+        (With<StoryCommsSpeakerText>, Without<StoryCommsBodyText>),
+    >,
+    mut bodies: Query<&mut Text, (With<StoryCommsBodyText>, Without<StoryCommsSpeakerText>)>,
+) {
+    let Some(line) = comms.current else {
+        for (mut node, _) in &mut overlays {
+            node.display = Display::None;
+        }
+        return;
+    };
+
+    let accent = line.speaker.accent_color();
+    for (mut node, mut border) in &mut overlays {
+        node.display = Display::Flex;
+        *border = BorderColor::all(accent);
+    }
+
+    if let Some(handle) = story_ui.portrait_for(line.speaker) {
+        for mut img in &mut portraits {
+            img.image = handle.clone();
+        }
+    }
+
+    if let Ok((mut sp_text, mut sp_col)) = speakers.single_mut() {
+        **sp_text = line.speaker.display_name().to_string();
+        *sp_col = TextColor(accent);
+    }
+
+    if let Ok(mut body_text) = bodies.single_mut() {
+        **body_text = comms.visible_text();
     }
 }
 

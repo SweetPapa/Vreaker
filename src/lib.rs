@@ -10,6 +10,7 @@ pub mod player;
 pub mod rendering;
 pub mod sprite_manifest;
 pub mod state;
+pub mod story;
 pub mod ui;
 
 use bevy::prelude::*;
@@ -24,6 +25,7 @@ use physics::PhysicsPlugin;
 use player::PlayerPlugin;
 use rendering::RenderingPlugin;
 use state::GameStatePlugin;
+use story::StoryPlugin;
 use ui::GameUiPlugin;
 
 /// Deterministic fixed simulation frequency (`60 Hz`) shared across physics and combat.
@@ -45,6 +47,7 @@ impl Plugin for CoreLogicPlugin {
                 CombatPlugin,
                 PlayerPlugin,
                 EnemiesPlugin,
+                StoryPlugin,
             ));
     }
 }
@@ -3990,5 +3993,248 @@ SpriteSheetManifest(
             app2.world().get::<DamagePercent>(p2).unwrap().0 >= 10.0,
             "Active TimedHazardBeam must damage overlapping player"
         );
+    }
+
+    #[test]
+    fn test_story_bible_comms_keepsakes_and_boss_dialogue() {
+        use crate::enemies::{BlastEdge, BlastZoneKoEvent, EnemyArchetype};
+        use crate::physics::{CollectibleItem, CollectibleKind, KinematicBody};
+        use crate::story::{SpeakerId, StoryBeat, StoryCommsState};
+
+        // Verify 2085 Story Bible cast & enemy roster display names
+        assert_eq!(EnemyArchetype::LightStriker.display_name(), "STRIDER DRONE (MK-II)");
+        assert_eq!(EnemyArchetype::HeavyBrawler.display_name(), "SLAG ENFORCER");
+        assert_eq!(EnemyArchetype::ArcaneZoner.display_name(), "ARC WEAVER");
+        assert_eq!(EnemyArchetype::ShadowAssassin.display_name(), "PHANTOM INTERCEPTOR");
+        assert_eq!(EnemyArchetype::FoundryBoss.display_name(), "IRON TITAN: VULCANUS");
+        let player_ko = BlastZoneKoEvent {
+            is_player: true,
+            archetype: None,
+            ko_pos: Vec2::ZERO,
+            edge: BlastEdge::Bottom,
+            final_percent: 110.0,
+        };
+        assert_eq!(player_ko.display_name(), "P1 LEVY");
+
+        // Entering Playing triggers Stage 1 Intro (Mina -> Barnaby -> Levy)
+        let (mut app, player) = physics_test_app(Vec2::new(0.0, 20.0));
+        {
+            let comms = app.world().resource::<StoryCommsState>();
+            assert!(comms.triggered.contains(&StoryBeat::Stage1Intro));
+            assert_eq!(comms.current.unwrap().speaker, SpeakerId::Mina);
+            assert_eq!(comms.queue.len(), 2);
+        }
+
+        // Advance through Mina -> Barnaby -> Levy -> empty
+        for expected in [SpeakerId::Barnaby, SpeakerId::Levy] {
+            let mut comms = app.world_mut().resource_mut::<StoryCommsState>();
+            comms.advance_or_skip(); // finish typewriter
+            comms.advance_or_skip(); // next line
+            assert_eq!(comms.current.unwrap().speaker, expected);
+        }
+
+        // Collect all 3 Stage 1 keepsakes at Sector 2, Sector 4, and Sector 6 coordinates
+        for relic_x in [720.0_f32, 2600.0_f32, 5700.0_f32] {
+            app.world_mut()
+                .spawn(CollectibleItem::new(CollectibleKind::SecretRelic, Vec2::new(relic_x, 20.0)));
+            app.world_mut().get_mut::<KinematicBody>(player).unwrap().position =
+                Vec2::new(relic_x, 20.0);
+            step_fixed_ticks(&mut app, 2);
+        }
+        assert!(
+            app.world().resource::<StoryCommsState>().all_stage1_relics_found(),
+            "Collecting Sector 2, 4, and 6 relics must record all three 1700s keepsakes"
+        );
+
+        // Entering Sector 8 Sanctum threshold fires verbatim 4-line Vulcanus pre-boss confrontation
+        app.world_mut().get_mut::<KinematicBody>(player).unwrap().position =
+            Vec2::new(8380.0, 20.0);
+        step_fixed_ticks(&mut app, 2);
+        {
+            let comms = app.world().resource::<StoryCommsState>();
+            assert!(comms.triggered.contains(&StoryBeat::BossVulcanusIntro));
+            let cur = comms.current.unwrap();
+            assert_eq!(cur.speaker, SpeakerId::Vulcanus);
+            assert!(cur.text.contains("UNREGISTERED ORGANIC DETECTED"));
+            assert_eq!(comms.queue.len(), 3);
+        }
+    }
+
+    #[test]
+    fn test_instant_advancing_sword_combo_c_stick_heavy_smash_and_telegraph() {
+        use std::path::Path;
+        use crate::combat::{AttackKind, AttackState, SmashChargeState};
+        use crate::enemies::{EnemyArchetype, EnemyFighter, spawn_enemy_fighter};
+        use crate::physics::{KinematicBody, MovementState, PlayerIntent, SolidRect};
+        use crate::sprite_manifest::SpriteSheetManifest;
+
+        // 1. Walking forward + pressing Melee (even while melee_held=true!) fires instant
+        //    3-hit Rift Saber Combo (Jab1 -> Jab2 -> Jab3) with 7-frame input buffering — NEVER freezes!
+        let (mut app, player) = physics_test_app(Vec2::new(0.0, 18.0));
+        app.world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-300.0, -32.0), Vec2::new(600.0, 0.0)));
+        step_fixed_ticks(&mut app, 2);
+        {
+            let mut body = app.world_mut().get_mut::<KinematicBody>(player).unwrap();
+            body.state = MovementState::Grounded;
+            body.ground_speed = 110.0;
+            body.velocity = Vec2::new(110.0, 0.0);
+            body.facing = 1.0;
+        }
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.move_axis = Vec2::new(1.0, 0.0);
+            intent.melee_just_pressed = true;
+            intent.melee_held = true;
+        }
+        step_fixed_ticks(&mut app, 1);
+        assert!(
+            !app.world().get::<SmashChargeState>(player).unwrap().is_charging(),
+            "Walking forward + Melee must NOT stall in SmashChargeState!"
+        );
+        assert_eq!(
+            app.world().get::<AttackState>(player).unwrap().active_move,
+            Some(AttackKind::Jab1),
+            "Walking forward + Melee must immediately swing Rift Slash I (Jab1)"
+        );
+
+        // Buffer 2nd press slightly before Jab1 cooldown expires -> chains cleanly into Jab2!
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.melee_just_pressed = false;
+        }
+        step_fixed_ticks(&mut app, 6);
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.melee_just_pressed = true;
+        }
+        step_fixed_ticks(&mut app, 1);
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.melee_just_pressed = false;
+        }
+        step_fixed_ticks(&mut app, 4);
+        assert_eq!(
+            app.world().get::<AttackState>(player).unwrap().active_move,
+            Some(AttackKind::Jab2),
+            "Buffered Melee press must chain seamlessly into Rising Cross II (Jab2)"
+        );
+
+        // Chain 3rd hit -> Breaker Cleave III (Jab3)!
+        step_fixed_ticks(&mut app, 7);
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.melee_just_pressed = true;
+        }
+        step_fixed_ticks(&mut app, 1);
+        {
+            let mut intent = app.world_mut().get_mut::<PlayerIntent>(player).unwrap();
+            intent.melee_just_pressed = false;
+        }
+        step_fixed_ticks(&mut app, 4);
+        assert_eq!(
+            app.world().get::<AttackState>(player).unwrap().active_move,
+            Some(AttackKind::Jab3),
+            "3rd combo hit must unleash Breaker Cleave III (Jab3)"
+        );
+
+        // 2. Up + Melee & Down + Melee with melee_held=true fire ZERO-LAG UpTilt & DownTilt on Frame 1!
+        let (mut app_tilt, p_tilt) = physics_test_app(Vec2::new(0.0, 18.0));
+        app_tilt
+            .world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-200.0, -32.0), Vec2::new(200.0, 0.0)));
+        step_fixed_ticks(&mut app_tilt, 2);
+        {
+            let mut intent = app_tilt.world_mut().get_mut::<PlayerIntent>(p_tilt).unwrap();
+            intent.move_axis = Vec2::new(0.0, 1.0);
+            intent.melee_just_pressed = true;
+            intent.melee_held = true;
+        }
+        step_fixed_ticks(&mut app_tilt, 1);
+        assert_eq!(
+            app_tilt.world().get::<AttackState>(p_tilt).unwrap().active_move,
+            Some(AttackKind::UpTilt),
+            "Up + Melee must swing UpTilt immediately with zero charge-hold delay!"
+        );
+
+        // 3. Dedicated HeavySmash (`U`/`V`) holds to charge & releases UpSmash cleanly,
+        //    and Right-Stick C-Stick triggers instant grounded DownSmash & airborne BackAir!
+        let (mut app_heavy, p_heavy) = physics_test_app(Vec2::new(0.0, 18.0));
+        app_heavy
+            .world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-200.0, -32.0), Vec2::new(200.0, 0.0)));
+        step_fixed_ticks(&mut app_heavy, 2);
+        {
+            let mut intent = app_heavy.world_mut().get_mut::<PlayerIntent>(p_heavy).unwrap();
+            intent.move_axis = Vec2::new(0.0, 1.0);
+            intent.heavy_just_pressed = true;
+            intent.heavy_held = true;
+        }
+        step_fixed_ticks(&mut app_heavy, 1);
+        assert!(app_heavy.world().get::<SmashChargeState>(p_heavy).unwrap().is_charging());
+        {
+            let mut intent = app_heavy.world_mut().get_mut::<PlayerIntent>(p_heavy).unwrap();
+            intent.heavy_just_pressed = false;
+        }
+        step_fixed_ticks(&mut app_heavy, 12);
+        {
+            let mut intent = app_heavy.world_mut().get_mut::<PlayerIntent>(p_heavy).unwrap();
+            intent.heavy_held = false;
+        }
+        step_fixed_ticks(&mut app_heavy, 1);
+        assert_eq!(
+            app_heavy.world().get::<AttackState>(p_heavy).unwrap().active_move,
+            Some(AttackKind::UpSmash),
+            "Dedicated HeavySmash + Up must charge and release UpSmash!"
+        );
+
+        // Right-Stick C-Stick airborne Back-Air test
+        let (mut app_cs, p_cs) = physics_test_app(Vec2::new(0.0, 100.0));
+        {
+            let mut b = app_cs.world_mut().get_mut::<KinematicBody>(p_cs).unwrap();
+            b.state = MovementState::Airborne;
+            b.facing = 1.0;
+        }
+        {
+            let mut intent = app_cs.world_mut().get_mut::<PlayerIntent>(p_cs).unwrap();
+            intent.c_stick_axis = Vec2::new(-1.0, 0.0);
+            intent.c_stick_just_flicked = true;
+        }
+        step_fixed_ticks(&mut app_cs, 1);
+        assert_eq!(
+            app_cs.world().get::<AttackState>(p_cs).unwrap().active_move,
+            Some(AttackKind::BackAir),
+            "Flicking Right-Stick behind Levy in midair must fire instant Back-Air!"
+        );
+
+        // 4. Patrolling enemies actively pace instead of freezing like statues!
+        let (mut app_pat, _p_pat) = physics_test_app(Vec2::new(-900.0, 18.0));
+        app_pat
+            .world_mut()
+            .spawn(SolidRect::from_min_max(Vec2::new(-1000.0, -32.0), Vec2::new(500.0, 0.0)));
+        let drone = {
+            let mut cmds = app_pat.world_mut().commands();
+            let id = spawn_enemy_fighter(&mut cmds, EnemyArchetype::LightStriker, Vec2::new(200.0, 22.0), false);
+            app_pat.world_mut().flush();
+            id
+        };
+        step_fixed_ticks(&mut app_pat, 12);
+        assert!(
+            app_pat.world().get::<KinematicBody>(drone).unwrap().speed() > 15.0,
+            "Patrolling enemies must actively pace around their post instead of standing frozen!"
+        );
+        let _ = app_pat.world().get::<EnemyFighter>(drone);
+
+        // 5. All 6 freshly baked 29-clip character sprite sheets contain the new `telegraph` windup clip!
+        for pack in ["hero", "rogue", "barbarian", "mage", "assassin", "boss"] {
+            let manifest = SpriteSheetManifest::load_from_file(
+                Path::new("assets/sprites").join(pack).join(format!("{pack}.ron")),
+            )
+            .unwrap_or_else(|e| panic!("Baked {pack}.ron failed to load: {e}"));
+            assert!(
+                manifest.animations.contains_key("telegraph"),
+                "Sprite pack '{pack}' must include newly baked 'telegraph' windup animation!"
+            );
+        }
     }
 }

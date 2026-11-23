@@ -26,13 +26,18 @@ pub const DPAD_CALIBRATION_PATH: &str = "assets/config/gamepad_dpad.ron";
 /// Persistent RON path storing Smash-style player control settings.
 pub const CONTROL_CONFIG_PATH: &str = "assets/config/controls.ron";
 
-/// Gameplay actions matching `SPEC.md` Section 5 (+ Smash Shield / Roll / Dodge / Taunt).
+/// Gameplay actions matching `SPEC.md` Section 5 (+ Smash Shield / Roll / Dodge / Heavy / C-Stick / Taunt).
 #[derive(Actionlike, PartialEq, Eq, Clone, Copy, Hash, Debug, Reflect)]
 pub enum PlayerAction {
     #[actionlike(DualAxis)]
     Move,
+    /// Super Smash Bros. Right-Stick (C-Stick) for instant directional Smashes & Aerials!
+    #[actionlike(DualAxis)]
+    SmashStick,
     Jump,
     MeleeAttack,
+    /// Dedicated Heavy / Chargeable Smash attack button (`U` / `V` on keyboard, `R3` on gamepad).
+    HeavySmash,
     Special,
     Buster,
     SpinDash,
@@ -483,11 +488,16 @@ pub fn player_input_map_for_config(cfg: &ControlConfig) -> InputMap<PlayerAction
         .with_dual_axis(PlayerAction::Move, VirtualDPad::dpad())
         .with_dual_axis(PlayerAction::Move, VirtualDPad::wasd())
         .with_dual_axis(PlayerAction::Move, VirtualDPad::arrow_keys())
+        // Classic Smash Bros. Right Stick (C-Stick): Instant F/U/D-Smash & Aerials!
+        .with_dual_axis(PlayerAction::SmashStick, GamepadStick::RIGHT)
         // Keyboard gameplay defaults (always available regardless of gamepad layout)
         .with(PlayerAction::Jump, KeyCode::Space)
         .with(PlayerAction::Jump, KeyCode::KeyZ)
         .with(PlayerAction::MeleeAttack, KeyCode::KeyJ)
         .with(PlayerAction::MeleeAttack, KeyCode::KeyX)
+        .with(PlayerAction::HeavySmash, KeyCode::KeyU)
+        .with(PlayerAction::HeavySmash, KeyCode::KeyV)
+        .with(PlayerAction::HeavySmash, GamepadButton::RightThumb)
         .with(PlayerAction::Special, KeyCode::KeyK)
         .with(PlayerAction::Special, KeyCode::KeyC)
         .with(PlayerAction::Buster, KeyCode::KeyL)
@@ -499,7 +509,7 @@ pub fn player_input_map_for_config(cfg: &ControlConfig) -> InputMap<PlayerAction
         .with(PlayerAction::Guard, KeyCode::KeyQ)
         .with(PlayerAction::Guard, KeyCode::KeyF)
         .with(PlayerAction::Guard, KeyCode::ControlRight)
-        // Taunt / Victory Pose: Select/Back or Right Stick Click | T
+        // Taunt / Victory Pose: Select/Back | T
         .with(PlayerAction::Taunt, GamepadButton::Select)
         .with(PlayerAction::Taunt, KeyCode::KeyT)
         // Pause: Start | Esc

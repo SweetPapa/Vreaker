@@ -11,9 +11,11 @@
 # User-local controller calibration & config overrides
 /assets/config/*.ron
 
-# OS / editor noise
+# OS / editor / Python cache noise
 .DS_Store
 *.swp
 *.swo
 .vscode/
 .idea/
+__pycache__/
+*.pyc

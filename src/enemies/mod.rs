@@ -21,6 +21,7 @@ use crate::physics::{
 };
 use crate::player::{DEFAULT_PLAYER_SPAWN, Player};
 use crate::state::{AppState, GameStateCommand, StageRestartEvent};
+use crate::story::{STAGE1_RELIC_NAMES, StoryBeat, StoryTriggerEvent, stage1_relic_index_for_x};
 
 /// Respawn delay in seconds after knocking an endless arena fighter into a Smash blast zone.
 pub const ENEMY_KO_RESPAWN_SECS: f32 = 3.0;
@@ -43,10 +44,10 @@ pub enum EnemyArchetype {
 impl EnemyArchetype {
     pub fn display_name(self) -> &'static str {
         match self {
-            EnemyArchetype::LightStriker => "ROGUE STRIKER",
-            EnemyArchetype::HeavyBrawler => "IRON BRAWLER",
-            EnemyArchetype::ArcaneZoner => "PLASMA ARCANIST",
-            EnemyArchetype::ShadowAssassin => "SHADOW ASSASSIN",
+            EnemyArchetype::LightStriker => "STRIDER DRONE (MK-II)",
+            EnemyArchetype::HeavyBrawler => "SLAG ENFORCER",
+            EnemyArchetype::ArcaneZoner => "ARC WEAVER",
+            EnemyArchetype::ShadowAssassin => "PHANTOM INTERCEPTOR",
             EnemyArchetype::FoundryBoss => "IRON TITAN: VULCANUS",
         }
     }
@@ -388,7 +389,7 @@ pub struct BlastZoneKoEvent {
 impl BlastZoneKoEvent {
     pub fn display_name(self) -> &'static str {
         if self.is_player {
-            "P1 BREAKER"
+            "P1 LEVY"
         } else {
             self.archetype
                 .map_or("FIGHTER", EnemyArchetype::display_name)
@@ -740,7 +741,7 @@ fn update_checkpoint_beacons(
 }
 
 /// Collects floating Energy Cores, Secret Golden Data Relics, and Emerald Heal Canisters!
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn update_collectible_items(
     mut commands: Commands,
     mut score: ResMut<ArenaScore>,
@@ -749,6 +750,7 @@ fn update_collectible_items(
     items: Query<(Entity, &CollectibleItem)>,
     mut move_events: MessageWriter<MovementEvent>,
     mut vis_events: MessageWriter<CombatVisualEvent>,
+    mut story_events: MessageWriter<StoryTriggerEvent>,
 ) {
     let Ok((player_entity, body, mut pct)) = players.single_mut() else {
         return;
@@ -772,12 +774,21 @@ fn update_collectible_items(
             CollectibleKind::SecretRelic => {
                 score.relics_collected += 1;
                 pct.0 = (pct.0 - 20.0).max(0.0);
+                let idx = stage1_relic_index_for_x(item.pos.x);
+                let keepsake = STAGE1_RELIC_NAMES[idx];
+                let beat = match idx {
+                    0 => StoryBeat::Relic1Compass,
+                    1 => StoryBeat::Relic2Portrait,
+                    _ => StoryBeat::Relic3Locket,
+                };
+                story_events.write(StoryTriggerEvent(beat));
                 status.banner_text = format!(
-                    "SECRET DATA RELIC FOUND!  ({}/{})",
+                    "1700s KEEPSAKE: {}  ({}/{})",
+                    keepsake,
                     score.relics_collected,
                     score.relics_total.max(score.relics_collected)
                 );
-                status.banner_timer = 3.0;
+                status.banner_timer = 3.2;
                 move_events.write(MovementEvent {
                     entity: player_entity,
                     kind: MovementFxKind::CollectRelic,
@@ -936,6 +947,7 @@ fn update_lockdown_encounters(
     mut status: ResMut<EncounterStatus>,
     mut state_commands: MessageWriter<GameStateCommand>,
     mut vis_events: MessageWriter<CombatVisualEvent>,
+    mut story_events: MessageWriter<StoryTriggerEvent>,
     mut players: Query<(&KinematicBody, &mut DamagePercent), With<Player>>,
     alive_enemies: Query<Entity, With<EnemyFighter>>,
     mut encounters: Query<&mut LockdownEncounter>,
@@ -1016,6 +1028,10 @@ fn update_lockdown_encounters(
                     // Spawn Wave 0 enemies (or Boss!)
                     spawn_encounter_wave(&mut commands, &mut enc, 0, &mut vis_events);
 
+                    if enc.is_boss {
+                        story_events.write(StoryTriggerEvent(StoryBeat::BossVulcanusIntro));
+                    }
+
                     status.banner_text = if enc.is_boss {
                         format!("BOSS LOCKDOWN  •  {}", enc.title)
                     } else {
@@ -1067,7 +1083,9 @@ fn update_lockdown_encounters(
                         };
 
                         if enc.is_boss {
-                            status.banner_text = "IRON TITAN DEFEATED  •  STAGE CLEAR!".to_string();
+                            story_events.write(StoryTriggerEvent(StoryBeat::BossVulcanusDefeated));
+                            status.banner_text =
+                                "FORGE DIAMOND RECOVERED  •  STAGE CLEAR!".to_string();
                             status.banner_timer = 4.0;
                             status.victory_delay_timer = Some(1.15);
                         } else {
@@ -1703,7 +1721,22 @@ fn update_enemy_fighter_ai(
 
         match fighter.state {
             EnemyAiState::Patrol => {
-                body.ground_speed *= (1.0 - dt * 6.0).max(0.0);
+                // Active sentinel pacing around home post so idle enemies look alive instead of frozen statues!
+                let patrol_half = 44.0_f32;
+                let p_min = (fighter.home_pos.x - patrol_half).max(arena_min_x + 8.0);
+                let p_max = (fighter.home_pos.x + patrol_half).min(arena_max_x - 8.0);
+                if p_max - p_min > 18.0 && body.state == MovementState::Grounded {
+                    if body.position.x <= p_min {
+                        body.facing = 1.0;
+                    } else if body.position.x >= p_max {
+                        body.facing = -1.0;
+                    }
+                    let pace = body.facing * fighter.archetype.move_speed() * 0.42;
+                    body.ground_speed = pace;
+                    body.velocity.x = pace;
+                } else {
+                    body.ground_speed *= (1.0 - dt * 6.0).max(0.0);
+                }
                 if dist <= aggro_range {
                     fighter.state = EnemyAiState::Chase;
                 }
